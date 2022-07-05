@@ -7,3 +7,9 @@ win64build
 
 ## qt-creator
 CMakeLists.txt.user*
+
+# exclude project files
+**.sln
+**.vcxproj
+**.vcxproj.user
+**.vcxproj.filters

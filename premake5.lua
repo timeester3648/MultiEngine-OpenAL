@@ -11,6 +11,7 @@ project "OpenAL"
 	includedirs {
 		"%{IncludeDir.mle}",
 
+		"./",
 		"./al",
 		"./alc",
 		"./core",
@@ -41,22 +42,22 @@ project "OpenAL"
  	filter "system:windows"
 		disablewarnings { "5030", "4065", "4834" }
 		defines { "AL_ALEXT_PROTOTYPES", "AL_BUILD_LIBRARY", "RESTRICT=__restrict", "_CRT_SECURE_NO_WARNINGS" }
-		excludes { "./src/core/rtkit.cpp",
-				   "./src/core/dbus_wrap.cpp",
-				   "./src/core/mixer/mixer_neon.cpp",
+		excludes { "./core/rtkit.cpp",
+				   "./core/dbus_wrap.cpp",
+				   "./core/mixer/mixer_neon.cpp",
 
-				   "./src/alc/backends/oss.cpp",
-				   "./src/alc/backends/jack.cpp",
-				   "./src/alc/backends/alsa.cpp",
-				   "./src/alc/backends/oboe.cpp",
-				   "./src/alc/backends/sdl2.cpp",
-				   "./src/alc/backends/sndio.cpp",
-				   "./src/alc/backends/opensl.cpp",
-				   "./src/alc/backends/solaris.cpp",
-				   "./src/alc/backends/pipewire.cpp",
-				   "./src/alc/backends/coreaudio.cpp",
-				   "./src/alc/backends/portaudio.cpp",
-				   "./src/alc/backends/pulseaudio.cpp" }
+				   "./alc/backends/oss.cpp",
+				   "./alc/backends/jack.cpp",
+				   "./alc/backends/alsa.cpp",
+				   "./alc/backends/oboe.cpp",
+				   "./alc/backends/sdl2.cpp",
+				   "./alc/backends/sndio.cpp",
+				   "./alc/backends/opensl.cpp",
+				   "./alc/backends/solaris.cpp",
+				   "./alc/backends/pipewire.cpp",
+				   "./alc/backends/coreaudio.cpp",
+				   "./alc/backends/portaudio.cpp",
+				   "./alc/backends/pulseaudio.cpp" }
 
  	filter "configurations:Debug"
 		defines { "MLE_DEBUG_BUILD", "DEBUG" }

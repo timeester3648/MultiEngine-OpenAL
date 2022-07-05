@@ -1,9 +1,9 @@
 #ifndef OPTHELPERS_H
 #define OPTHELPERS_H
 
+#include <memory>
 #include <cstdint>
 #include <utility>
-
 
 #ifdef __has_builtin
 #define HAS_BUILTIN __has_builtin
