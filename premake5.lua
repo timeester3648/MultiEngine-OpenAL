@@ -11,18 +11,27 @@ project "OpenAL"
 	includedirs {
 		"%{IncludeDir.mle}",
 
-		"./include",
-
-		"./src",
-		"./src/al",
-		"./src/alc",
-		"./src/core",
-		"./src/common"
+		"./al",
+		"./alc",
+		"./core",
+		"./common",
+		"./include"
 	}
 
 	files {
-		"./**.h",
-		"./**.cpp"
+		"./al/**.h",
+		"./al/**.cpp",
+
+		"./alc/**.h",
+		"./alc/**.cpp",
+
+		"./core/**.h",
+		"./core/**.cpp",
+
+		"./common/**.h",
+		"./common/**.cpp",
+
+		"./include/**.h"
 	}
 
 	defines {
