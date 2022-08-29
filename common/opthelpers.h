@@ -4,6 +4,10 @@
 #include <memory>
 #include <cstdint>
 #include <utility>
+<<<<<<< HEAD
+=======
+#include <memory>
+>>>>>>> 6e94db24015ca9aa7a76e7c3340143e4c3a66806
 
 #ifdef __has_builtin
 #define HAS_BUILTIN __has_builtin

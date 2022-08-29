@@ -89,8 +89,8 @@ struct FshifterState final : public EffectState {
 
     /* Effect gains for each output channel */
     struct {
-        float Current[MAX_OUTPUT_CHANNELS]{};
-        float Target[MAX_OUTPUT_CHANNELS]{};
+        float Current[MaxAmbiChannels]{};
+        float Target[MaxAmbiChannels]{};
     } mGains[2];
 
 
@@ -160,8 +160,8 @@ void FshifterState::update(const ContextBase *context, const EffectSlot *slot,
         break;
     }
 
-    const auto lcoeffs = CalcDirectionCoeffs({-1.0f, 0.0f, 0.0f}, 0.0f);
-    const auto rcoeffs = CalcDirectionCoeffs({ 1.0f, 0.0f, 0.0f}, 0.0f);
+    static constexpr auto lcoeffs = CalcDirectionCoeffs({-1.0f, 0.0f, 0.0f});
+    static constexpr auto rcoeffs = CalcDirectionCoeffs({ 1.0f, 0.0f, 0.0f});
 
     mOutTarget = target.Main->Buffer;
     ComputePanGains(target.Main, lcoeffs.data(), slot->Gain, mGains[0].Target);

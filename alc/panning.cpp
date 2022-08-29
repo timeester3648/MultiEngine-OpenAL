@@ -220,7 +220,7 @@ struct DecoderConfig<DualBand, 0> {
         return *this;
     }
 
-    explicit operator bool() const noexcept { return mOrder != 0; }
+    explicit operator bool() const noexcept { return !mChannels.empty(); }
 };
 using DecoderView = DecoderConfig<DualBand, 0>;
 
@@ -331,7 +331,8 @@ DecoderView MakeDecoderView(ALCdevice *device, const AmbDecConf *conf,
 {
     DecoderView ret{};
 
-    decoder.mOrder = (conf->ChanMask > Ambi2OrderMask) ? uint8_t{3} :
+    decoder.mOrder = (conf->ChanMask > Ambi3OrderMask) ? uint8_t{4} :
+        (conf->ChanMask > Ambi2OrderMask) ? uint8_t{3} :
         (conf->ChanMask > Ambi1OrderMask) ? uint8_t{2} : uint8_t{1};
     decoder.mIs3D = (conf->ChanMask&AmbiPeriphonicMask) != 0;
 
@@ -611,10 +612,16 @@ void InitPanning(ALCdevice *device, const bool hqdec=false, const bool stablize=
                 { return BFChannelConfig{1.0f/n3dscale[acn], acn}; });
             AllocChannels(device, count, 0);
 
-            float nfc_delay{device->configValue<float>("decoder", "nfc-ref-delay").value_or(0.0f)};
-            if(nfc_delay > 0.0f)
-                InitNearFieldCtrl(device, nfc_delay * SpeedOfSoundMetersPerSec, device->mAmbiOrder,
-                    true);
+            float avg_dist{};
+            if(auto distopt = device->configValue<float>("decoder", "speaker-dist"))
+                avg_dist = *distopt;
+            else if(auto delayopt = device->configValue<float>("decoder", "nfc-ref-delay"))
+            {
+                WARN("nfc-ref-delay is deprecated, use speaker-dist instead\n");
+                avg_dist = *delayopt * SpeedOfSoundMetersPerSec;
+            }
+
+            InitNearFieldCtrl(device, avg_dist, device->mAmbiOrder, true);
             return;
         }
     }
@@ -623,7 +630,7 @@ void InitPanning(ALCdevice *device, const bool hqdec=false, const bool stablize=
     al::vector<ChannelDec> chancoeffs, chancoeffslf;
     for(size_t i{0u};i < decoder.mChannels.size();++i)
     {
-        const uint idx{GetChannelIdxByName(device->RealOut, decoder.mChannels[i])};
+        const uint idx{device->channelIdxByName(decoder.mChannels[i])};
         if(idx == INVALID_CHANNEL_INDEX)
         {
             ERR("Failed to find %s channel in device\n",
@@ -698,6 +705,7 @@ void InitPanning(ALCdevice *device, const bool hqdec=false, const bool stablize=
 
     TRACE("Enabling %s-band %s-order%s ambisonic decoder\n",
         !dual_band ? "single" : "dual",
+        (decoder.mOrder > 3) ? "fourth" :
         (decoder.mOrder > 2) ? "third" :
         (decoder.mOrder > 1) ? "second" : "first",
         decoder.mIs3D ? " periphonic" : "");
@@ -810,13 +818,13 @@ void InitHrtfPanning(ALCdevice *device)
     static const float AmbiOrderHFGain1O[MaxAmbiOrder+1]{
         /*ENRGY*/ 2.000000000e+00f, 1.154700538e+00f
     }, AmbiOrderHFGain2O[MaxAmbiOrder+1]{
-        /*ENRGY 2.357022604e+00f, 1.825741858e+00f, 9.428090416e-01f*/
-        /*AMP   1.000000000e+00f, 7.745966692e-01f, 4.000000000e-01f*/
-        /*RMS*/ 9.128709292e-01f, 7.071067812e-01f, 3.651483717e-01f
+        /*ENRGY 1.972026594e+00f, 1.527525232e+00f, 7.888106377e-01f*/
+        /*AMP*/ 1.000000000e+00f, 7.745966692e-01f, 4.000000000e-01f
+        /*RMS   9.128709292e-01f, 7.071067812e-01f, 3.651483717e-01f*/
     }, AmbiOrderHFGain3O[MaxAmbiOrder+1]{
         /*ENRGY 1.865086714e+00f, 1.606093894e+00f, 1.142055301e+00f, 5.683795528e-01f*/
-        /*AMP   1.000000000e+00f, 8.611363116e-01f, 6.123336207e-01f, 3.047469850e-01f*/
-        /*RMS*/ 8.340921354e-01f, 7.182670250e-01f, 5.107426573e-01f, 2.541870634e-01f
+        /*AMP*/ 1.000000000e+00f, 8.611363116e-01f, 6.123336207e-01f, 3.047469850e-01f
+        /*RMS   8.340921354e-01f, 7.182670250e-01f, 5.107426573e-01f, 2.541870634e-01f*/
     };
 
     static_assert(al::size(AmbiPoints1O) == al::size(AmbiMatrix1O), "First-Order Ambisonic HRTF mismatch");
@@ -1016,11 +1024,13 @@ void aluInitRenderer(ALCdevice *device, int hrtf_id, al::optional<StereoEncoding
                     spkr_count += 1.0f;
                 }
             }
+
+            const float avg_dist{(accum_dist > 0.0f && spkr_count > 0) ? accum_dist/spkr_count :
+                device->configValue<float>("decoder", "speaker-dist").value_or(1.0f)};
+            InitNearFieldCtrl(device, avg_dist, decoder.mOrder, decoder.mIs3D);
+
             if(spkr_count > 0)
-            {
-                InitNearFieldCtrl(device, accum_dist / spkr_count, decoder.mOrder, decoder.mIs3D);
                 InitDistanceComp(device, decoder.mChannels, speakerdists);
-            }
         }
         if(auto *ambidec{device->AmbiDecoder.get()})
         {
@@ -1085,7 +1095,10 @@ void aluInitRenderer(ALCdevice *device, int hrtf_id, al::optional<StereoEncoding
 
     if(stereomode.value_or(StereoEncoding::Default) == StereoEncoding::Uhj)
     {
-        device->mUhjEncoder = std::make_unique<UhjEncoder>();
+        if(UhjQuality >= UhjLengthHq)
+            device->mUhjEncoder = std::make_unique<UhjEncoder<UhjLengthHq>>();
+        else
+            device->mUhjEncoder = std::make_unique<UhjEncoder<UhjLengthLq>>();
         TRACE("UHJ enabled\n");
         InitUhjPanning(device);
         device->PostProcess = &ALCdevice::ProcessUhj;
@@ -1121,49 +1134,12 @@ void aluInitEffectPanning(EffectSlot *slot, ALCcontext *context)
     DeviceBase *device{context->mDevice};
     const size_t count{AmbiChannelsFromOrder(device->mAmbiOrder)};
 
-    auto wetbuffer_iter = context->mWetBuffers.end();
-    if(slot->mWetBuffer)
-    {
-        /* If the effect slot already has a wet buffer attached, allocate a new
-         * one in its place.
-         */
-        wetbuffer_iter = context->mWetBuffers.begin();
-        for(;wetbuffer_iter != context->mWetBuffers.end();++wetbuffer_iter)
-        {
-            if(wetbuffer_iter->get() == slot->mWetBuffer)
-            {
-                slot->mWetBuffer = nullptr;
-                slot->Wet.Buffer = {};
-
-                *wetbuffer_iter = WetBufferPtr{new(FamCount(count)) WetBuffer{count}};
-
-                break;
-            }
-        }
-    }
-    if(wetbuffer_iter == context->mWetBuffers.end())
-    {
-        /* Otherwise, search for an unused wet buffer. */
-        wetbuffer_iter = context->mWetBuffers.begin();
-        for(;wetbuffer_iter != context->mWetBuffers.end();++wetbuffer_iter)
-        {
-            if(!(*wetbuffer_iter)->mInUse)
-                break;
-        }
-        if(wetbuffer_iter == context->mWetBuffers.end())
-        {
-            /* Otherwise, allocate a new one to use. */
-            context->mWetBuffers.emplace_back(WetBufferPtr{new(FamCount(count)) WetBuffer{count}});
-            wetbuffer_iter = context->mWetBuffers.end()-1;
-        }
-    }
-    WetBuffer *wetbuffer{slot->mWetBuffer = wetbuffer_iter->get()};
-    wetbuffer->mInUse = true;
+    slot->mWetBuffer.resize(count);
 
     auto acnmap_begin = AmbiIndex::FromACN().begin();
     auto iter = std::transform(acnmap_begin, acnmap_begin + count, slot->Wet.AmbiMap.begin(),
         [](const uint8_t &acn) noexcept -> BFChannelConfig
         { return BFChannelConfig{1.0f, acn}; });
     std::fill(iter, slot->Wet.AmbiMap.end(), BFChannelConfig{});
-    slot->Wet.Buffer = wetbuffer->mBuffer;
+    slot->Wet.Buffer = slot->mWetBuffer;
 }

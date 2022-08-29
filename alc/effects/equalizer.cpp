@@ -91,11 +91,11 @@ struct EqualizerState final : public EffectState {
         BiquadFilter filter[4];
 
         /* Effect gains for each channel */
-        float CurrentGains[MAX_OUTPUT_CHANNELS]{};
-        float TargetGains[MAX_OUTPUT_CHANNELS]{};
+        float CurrentGains[MaxAmbiChannels]{};
+        float TargetGains[MaxAmbiChannels]{};
     } mChans[MaxAmbiChannels];
 
-    FloatBufferLine mSampleBuffer{};
+    alignas(16) FloatBufferLine mSampleBuffer{};
 
 
     void deviceUpdate(const DeviceBase *device, const Buffer &buffer) override;

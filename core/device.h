@@ -37,9 +37,9 @@ using uint = unsigned int;
 
 #define MIN_OUTPUT_RATE      8000
 #define MAX_OUTPUT_RATE      192000
-#define DEFAULT_OUTPUT_RATE  44100
+#define DEFAULT_OUTPUT_RATE  48000
 
-#define DEFAULT_UPDATE_SIZE  882 /* 20ms */
+#define DEFAULT_UPDATE_SIZE  960 /* 20ms */
 #define DEFAULT_NUM_UPDATES  3
 
 
@@ -100,10 +100,9 @@ struct BFChannelConfig {
     uint Index;
 };
 
-
 struct MixParams {
     /* Coefficient channel mapping for mixing to the buffer. */
-    std::array<BFChannelConfig,MAX_OUTPUT_CHANNELS> AmbiMap{};
+    std::array<BFChannelConfig,MaxAmbiChannels> AmbiMap{};
 
     al::span<FloatBufferLine> Buffer;
 };
@@ -114,6 +113,8 @@ struct RealMixParams {
 
     al::span<FloatBufferLine> Buffer;
 };
+
+using AmbiRotateMatrix = std::array<std::array<float,MaxAmbiChannels>,MaxAmbiChannels>;
 
 enum {
     // Frequency was requested by the app or config file
@@ -182,9 +183,11 @@ struct DeviceBase {
     std::chrono::nanoseconds ClockBase{0};
     std::chrono::nanoseconds FixedLatency{0};
 
+    AmbiRotateMatrix mAmbiRotateMatrix{};
+
     /* Temp storage used for mixer processing. */
     static constexpr size_t MixerLineSize{BufferLineSize + MaxResamplerPadding +
-        UhjDecoder::sFilterDelay};
+        DecoderBase::sMaxDelay};
     static constexpr size_t MixerChannelsMax{16};
     using MixerBufferLine = std::array<float,MixerLineSize>;
     alignas(16) std::array<MixerBufferLine,MixerChannelsMax> mSampleData;
@@ -217,7 +220,7 @@ struct DeviceBase {
     uint mIrSize{0};
 
     /* Ambisonic-to-UHJ encoder */
-    std::unique_ptr<UhjEncoder> mUhjEncoder;
+    std::unique_ptr<UhjEncoderBase> mUhjEncoder;
 
     /* Ambisonic decoder for speakers */
     std::unique_ptr<BFormatDec> AmbiDecoder;
@@ -285,6 +288,13 @@ struct DeviceBase {
 #endif
     void handleDisconnect(const char *msg, ...);
 
+    /**
+     * Returns the index for the given channel name (e.g. FrontCenter), or
+     * INVALID_CHANNEL_INDEX if it doesn't exist.
+     */
+    uint channelIdxByName(Channel chan) const noexcept
+    { return RealOut.ChannelIndex[chan]; }
+
     DISABLE_ALLOC()
 
 private:
@@ -298,13 +308,6 @@ private:
 
 #define RECORD_THREAD_NAME "alsoft-record"
 
-
-/**
- * Returns the index for the given channel name (e.g. FrontCenter), or
- * INVALID_CHANNEL_INDEX if it doesn't exist.
- */
-inline uint GetChannelIdxByName(const RealMixParams &real, Channel chan) noexcept
-{ return real.ChannelIndex[chan]; }
 #define INVALID_CHANNEL_INDEX ~0u
 
 #endif /* CORE_DEVICE_H */

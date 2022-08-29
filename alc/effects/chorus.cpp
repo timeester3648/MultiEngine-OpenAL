@@ -61,8 +61,8 @@ struct ChorusState final : public EffectState {
 
     /* Gains for left and right sides */
     struct {
-        float Current[MAX_OUTPUT_CHANNELS]{};
-        float Target[MAX_OUTPUT_CHANNELS]{};
+        float Current[MaxAmbiChannels]{};
+        float Target[MaxAmbiChannels]{};
     } mGains[2];
 
     /* effect parameters */
@@ -120,8 +120,8 @@ void ChorusState::update(const ContextBase *Context, const EffectSlot *Slot,
     mFeedback = props->Chorus.Feedback;
 
     /* Gains for left and right sides */
-    const auto lcoeffs = CalcDirectionCoeffs({-1.0f, 0.0f, 0.0f}, 0.0f);
-    const auto rcoeffs = CalcDirectionCoeffs({ 1.0f, 0.0f, 0.0f}, 0.0f);
+    static constexpr auto lcoeffs = CalcDirectionCoeffs({-1.0f, 0.0f, 0.0f});
+    static constexpr auto rcoeffs = CalcDirectionCoeffs({ 1.0f, 0.0f, 0.0f});
 
     mOutTarget = target.Main->Buffer;
     ComputePanGains(target.Main, lcoeffs.data(), Slot->Gain, mGains[0].Target);

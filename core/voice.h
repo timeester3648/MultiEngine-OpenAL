@@ -51,7 +51,7 @@ enum class DirectMode : unsigned char {
 /* Maximum number of extra source samples that may need to be loaded, for
  * resampling or conversion purposes.
  */
-constexpr uint MaxPostVoiceLoad{MaxResamplerEdge + UhjDecoder::sFilterDelay};
+constexpr uint MaxPostVoiceLoad{MaxResamplerEdge + DecoderBase::sMaxDelay};
 
 
 enum {
@@ -85,8 +85,8 @@ struct SendParams {
     BiquadFilter HighPass;
 
     struct {
-        std::array<float,MAX_OUTPUT_CHANNELS> Current;
-        std::array<float,MAX_OUTPUT_CHANNELS> Target;
+        std::array<float,MaxAmbiChannels> Current;
+        std::array<float,MaxAmbiChannels> Target;
     } Gains;
 };
 
