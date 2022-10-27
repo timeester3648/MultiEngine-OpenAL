@@ -10,6 +10,7 @@ project "OpenAL"
 
 	includedirs {
 		"%{IncludeDir.mle}",
+		"%{IncludeDir.intrinsics}",
 
 		"./",
 		"./al",
