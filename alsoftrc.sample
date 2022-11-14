@@ -353,12 +353,21 @@
 ##
 [uhj]
 
-## filter: (global)
-#  Specifies the all-pass filter type for UHJ encoding, decoding, and Super
-#  Stereo processing. The default is 'fir256', which utilizes a 256-point FIR
-#  filter. 'fir512' utilizes a 512-point FIR filter, providing higher quality
-#  at the cost of higher CPU use.
-#filter = fir256
+## decode-filter: (global)
+#  Specifies the all-pass filter type for UHJ decoding and Super Stereo
+#  processing. Valid values are:
+#  iir - utilizes dual IIR filters, providing a wide pass-band with low CPU
+#        use, but causes additional phase shifts on the signal.
+#  fir256 - utilizes a 256-point FIR filter, providing more stable results but
+#           exhibiting attenuation in the lower and higher frequency bands.
+#  fir512 - utilizes a 512-point FIR filter, providing a wider pass-band than
+#           fir256, at the cost of more CPU use.
+#decode-filter = iir
+
+## encode-filter: (global)
+#  Specifies the all-pass filter type for UHJ output encoding. Valid values are
+#  the same as for decode-filter.
+#encode-filter = iir
 
 ##
 ## Reverb effect stuff (includes EAX reverb)
@@ -557,6 +566,14 @@
 ## WASAPI backend stuff
 ##
 [wasapi]
+
+## allow-resampler:
+#  Specifies whether to allow an extra resampler pass on the output. Enabling
+#  this will allow the playback device to be set to a different sample rate
+#  than the actual output can accept, causing the backend to apply its own
+#  resampling pass after OpenAL Soft mixes the sources and processes effects
+#  for output.
+#allow-resampler = true
 
 ##
 ## DirectSound backend stuff

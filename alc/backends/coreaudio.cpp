@@ -748,6 +748,7 @@ void CoreAudioCapture::open(const char *name)
     case DevFmtX51:
     case DevFmtX61:
     case DevFmtX71:
+    case DevFmtX714:
     case DevFmtX3D71:
     case DevFmtAmbi3D:
         throw al::backend_exception{al::backend_error::DeviceError, "%s not supported",
@@ -804,7 +805,7 @@ void CoreAudioCapture::open(const char *name)
 
     /* Set up sample converter if needed */
     if(outputFormat.mSampleRate != mDevice->Frequency)
-        mConverter = CreateSampleConverter(mDevice->FmtType, mDevice->FmtType,
+        mConverter = SampleConverter::Create(mDevice->FmtType, mDevice->FmtType,
             mFormat.mChannelsPerFrame, static_cast<uint>(hardwareFormat.mSampleRate),
             mDevice->Frequency, Resampler::FastBSinc24);
 

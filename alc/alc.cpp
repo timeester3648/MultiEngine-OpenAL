@@ -452,6 +452,9 @@ const struct {
     DECL(alAuxiliaryEffectSlotPlayvSOFT),
     DECL(alAuxiliaryEffectSlotStopSOFT),
     DECL(alAuxiliaryEffectSlotStopvSOFT),
+
+    DECL(alSourcePlayAtTimeSOFT),
+    DECL(alSourcePlayAtTimevSOFT),
 #ifdef ALSOFT_EAX
 }, eaxFunctions[] = {
     DECL(EAXGet),
@@ -1145,14 +1148,33 @@ void alc_initconfig(void)
     }
     Voice::InitMixer(ConfigValueStr(nullptr, nullptr, "resampler"));
 
-    if(auto uhjfiltopt = ConfigValueStr(nullptr, "uhj", "filter"))
+    auto uhjfiltopt = ConfigValueStr(nullptr, "uhj", "decode-filter");
+    if(!uhjfiltopt)
+    {
+        if((uhjfiltopt = ConfigValueStr(nullptr, "uhj", "filter")))
+            WARN("uhj/filter is deprecated, please use uhj/decode-filter\n");
+    }
+    if(uhjfiltopt)
     {
         if(al::strcasecmp(uhjfiltopt->c_str(), "fir256") == 0)
-            UhjQuality = UhjLengthLq;
+            UhjDecodeQuality = UhjQualityType::FIR256;
         else if(al::strcasecmp(uhjfiltopt->c_str(), "fir512") == 0)
-            UhjQuality = UhjLengthHq;
+            UhjDecodeQuality = UhjQualityType::FIR512;
+        else if(al::strcasecmp(uhjfiltopt->c_str(), "iir") == 0)
+            UhjDecodeQuality = UhjQualityType::IIR;
         else
-            WARN("Unsupported uhj/filter: %s\n", uhjfiltopt->c_str());
+            WARN("Unsupported uhj/decode-filter: %s\n", uhjfiltopt->c_str());
+    }
+    if((uhjfiltopt = ConfigValueStr(nullptr, "uhj", "encode-filter")))
+    {
+        if(al::strcasecmp(uhjfiltopt->c_str(), "fir256") == 0)
+            UhjEncodeQuality = UhjQualityType::FIR256;
+        else if(al::strcasecmp(uhjfiltopt->c_str(), "fir512") == 0)
+            UhjEncodeQuality = UhjQualityType::FIR512;
+        else if(al::strcasecmp(uhjfiltopt->c_str(), "iir") == 0)
+            UhjEncodeQuality = UhjQualityType::IIR;
+        else
+            WARN("Unsupported uhj/encode-filter: %s\n", uhjfiltopt->c_str());
     }
 
     auto traperr = al::getenv("ALSOFT_TRAP_ERROR");
@@ -1460,6 +1482,7 @@ ALCenum EnumFromDevFmt(DevFmtChannels channels)
     case DevFmtX71: return ALC_7POINT1_SOFT;
     case DevFmtAmbi3D: return ALC_BFORMAT3D_SOFT;
     /* FIXME: Shouldn't happen. */
+    case DevFmtX714:
     case DevFmtX3D71: break;
     }
     throw std::runtime_error{"Invalid DevFmtChannels: "+std::to_string(int(channels))};
@@ -1931,6 +1954,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
                 { "surround51", DevFmtX51,    0 },
                 { "surround61", DevFmtX61,    0 },
                 { "surround71", DevFmtX71,    0 },
+                { "surround714", DevFmtX714,  0 },
                 { "surround3d71", DevFmtX3D71, 0 },
                 { "surround51rear", DevFmtX51, 0 },
                 { "ambi1", DevFmtAmbi3D, 1 },
@@ -2111,6 +2135,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
     case DevFmtX51: device->RealOut.RemixMap = X51Downmix; break;
     case DevFmtX61: device->RealOut.RemixMap = X61Downmix; break;
     case DevFmtX71: device->RealOut.RemixMap = X71Downmix; break;
+    case DevFmtX714: device->RealOut.RemixMap = X71Downmix; break;
     case DevFmtX3D71: device->RealOut.RemixMap = X51Downmix; break;
     case DevFmtAmbi3D: break;
     }

@@ -105,6 +105,7 @@ static_assert(!(MaxResamplerPadding&1), "MaxResamplerPadding is not a multiple o
 namespace {
 
 using uint = unsigned int;
+using namespace std::chrono;
 
 constexpr uint MaxPitch{10};
 
@@ -919,7 +920,8 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
              * channels should be non-0).
              */
             if(Device->mAmbiOrder > voice->mAmbiOrder
-                || (Device->mAmbiOrder >= 2 && Is2DAmbisonic(voice->mFmtChannels)))
+                || (Device->mAmbiOrder >= 2 && !Device->m2DMixing
+                    && Is2DAmbisonic(voice->mFmtChannels)))
             {
                 if(voice->mAmbiOrder == 1)
                 {
@@ -940,8 +942,10 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                     UpsampleBFormatTransform(Device->mAmbiOrder, upsampler, shrot);
                 }
                 else if(voice->mAmbiOrder == 4)
-                    UpsampleBFormatTransform(Device->mAmbiOrder, AmbiScale::FourthOrder2DUp,
-                        shrot);
+                {
+                    auto&& upsampler = AmbiScale::FourthOrder2DUp;
+                    UpsampleBFormatTransform(Device->mAmbiOrder, upsampler, shrot);
+                }
             }
 
             /* Convert the rotation matrix for input ordering and scaling, and
@@ -1838,6 +1842,9 @@ void ProcessContexts(DeviceBase *device, const uint SamplesToDo)
 {
     ASSUME(SamplesToDo > 0);
 
+    const nanoseconds curtime{device->ClockBase +
+        nanoseconds{seconds{device->SamplesDone}}/device->Frequency};
+
     for(ContextBase *ctx : *device->mContexts.load(std::memory_order_acquire))
     {
         const EffectSlotArray &auxslots = *ctx->mActiveAuxSlots.load(std::memory_order_acquire);
@@ -1858,7 +1865,7 @@ void ProcessContexts(DeviceBase *device, const uint SamplesToDo)
         {
             const Voice::State vstate{voice->mPlayState.load(std::memory_order_acquire)};
             if(vstate != Voice::Stopped && vstate != Voice::Pending)
-                voice->mix(vstate, ctx, SamplesToDo);
+                voice->mix(vstate, ctx, curtime, SamplesToDo);
         }
 
         /* Process effects. */
