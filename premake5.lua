@@ -40,8 +40,10 @@ project "OpenAL"
 		"AL_LIBTYPE_STATIC"
 	}
 
- 	filter "system:windows"
+	filter "action:vs*"
 		disablewarnings { "5030", "4065", "4834" }
+
+ 	filter "system:windows"
 		defines { "AL_ALEXT_PROTOTYPES", "AL_BUILD_LIBRARY", "RESTRICT=__restrict", "_CRT_SECURE_NO_WARNINGS" }
 		excludes { "./core/rtkit.cpp",
 				   "./core/dbus_wrap.cpp",
@@ -59,22 +61,3 @@ project "OpenAL"
 				   "./alc/backends/coreaudio.cpp",
 				   "./alc/backends/portaudio.cpp",
 				   "./alc/backends/pulseaudio.cpp" }
-
- 	filter "configurations:Debug"
-		defines { "MLE_DEBUG_BUILD", "DEBUG" }
-		runtime "Debug"
-		symbols "on"
-
-	filter "configurations:Release"
-		defines { "MLE_RELEASE_BUILD", "NDEBUG" }
-		flags { "LinkTimeOptimization" }
-		runtime "Release"
-		optimize "speed"
-		intrinsics "on"
-
-	filter "configurations:Distribution"
-		defines {  "MLE_DISTRIBUTION_BUILD", "NDEBUG" }
-		flags { "LinkTimeOptimization" }
-		runtime "Release"
-		optimize "speed"
-		intrinsics "on"
