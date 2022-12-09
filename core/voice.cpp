@@ -366,7 +366,7 @@ void DoHrtfMix(const float *samples, const uint DstBufferSize, DirectParams &par
         std::begin(HrtfSamples));
     std::copy_n(samples, DstBufferSize, src_iter);
     /* Copy the last used samples back into the history buffer for later. */
-    if(likely(IsPlaying))
+    if(IsPlaying) [[likely]]
         std::copy_n(std::begin(HrtfSamples) + DstBufferSize, parms.Hrtf.History.size(),
             parms.Hrtf.History.begin());
 
@@ -473,7 +473,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
     VoiceBufferItem *BufferListItem{mCurrentBuffer.load(std::memory_order_relaxed)};
     VoiceBufferItem *BufferLoopItem{mLoopBuffer.load(std::memory_order_relaxed)};
     const uint increment{mStep};
-    if UNLIKELY(increment < 1)
+    if(increment < 1) [[unlikely]]
     {
         /* If the voice is supposed to be stopping but can't be mixed, just
          * stop it before bailing.
@@ -483,7 +483,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
         return;
     }
 
-    uint Counter{mFlags.test(VoiceIsFading) ? SamplesToDo : 0};
+    uint Counter{mFlags.test(VoiceIsFading) ? minu(SamplesToDo, 64u) : 0u};
     uint OutPos{0u};
 
     /* Check if we're doing a delayed start, and we start in this update. */
@@ -497,21 +497,17 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
         /* Get the number of samples ahead of the current time that output
          * should start at. Skip this update if it's beyond the output sample
          * count.
+         *
+         * Round the start position to a multiple of 4, which some mixers want.
+         * This makes the start time accurate to 4 samples. This could be made
+         * sample-accurate by forcing non-SIMD functions on the first run.
          */
         seconds::rep sampleOffset{duration_cast<seconds>(diff * Device->Frequency).count()};
+        sampleOffset = (sampleOffset+2) & ~seconds::rep{3};
         if(sampleOffset >= SamplesToDo)
             return;
 
-        /* Round the start position down to a multiple of 4, which some mixers
-         * want. This makes the start time accurate to 4 samples. This could be
-         * made sample-accurate by forcing non-SIMD functions on the first run.
-         *
-         * Also ensure any fading completes within this update (though don't go
-         * less than 64 samples, or the fade could be too fast).
-         */
-        OutPos = static_cast<uint>(sampleOffset) & ~3u;
-        if(Counter > 0)
-            Counter = maxu(Counter-OutPos, 64);
+        OutPos = static_cast<uint>(sampleOffset);
     }
 
     if(!Counter)
@@ -536,8 +532,6 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
             }
         }
     }
-    else if UNLIKELY(!BufferListItem)
-        Counter = std::min(Counter, 64u);
 
     std::array<float*,DeviceBase::MixerChannelsMax> SamplePointers;
     const al::span<float*> MixingSamples{SamplePointers.data(), mChans.size()};
@@ -596,7 +590,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
                     /* If the voice is stopping, only one mixing iteration will
                      * be done, so ensure it fades out completely this mix.
                      */
-                    if(unlikely(vstate == Stopping))
+                    if(vstate == Stopping) [[unlikely]]
                         Counter = std::min(Counter, DstBufferSize);
                 }
                 ASSUME(DstBufferSize > 0);
@@ -604,7 +598,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
         }
 
         float **voiceSamples{};
-        if(unlikely(!BufferListItem))
+        if(!BufferListItem) [[unlikely]]
         {
             const size_t srcOffset{(increment*DstBufferSize + DataPosFrac)>>MixerFracBits};
             auto prevSamples = mPrevSamples.data();
@@ -639,7 +633,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
             }
 
             size_t samplesLoaded{0};
-            if(unlikely(DataPosInt < 0))
+            if(DataPosInt < 0) [[unlikely]]
             {
                 if(static_cast<uint>(-DataPosInt) >= SrcBufferSize)
                     goto skip_mix;
@@ -684,11 +678,11 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
             {
                 SrcBufferSize = SrcBufferSize - PostPadding + MaxResamplerEdge;
                 mDecoder->decode(MixingSamples, SrcBufferSize,
-                    likely(vstate == Playing) ? srcOffset : 0);
+                    (vstate == Playing) ? srcOffset : 0);
             }
 
             /* Store the last source samples used for next time. */
-            if(likely(vstate == Playing))
+            if(vstate == Playing) [[likely]]
             {
                 prevSamples = mPrevSamples.data();
                 for(auto *chanbuffer : MixingSamples)
@@ -721,13 +715,13 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
 
                 if(mFlags.test(VoiceHasHrtf))
                 {
-                    const float TargetGain{parms.Hrtf.Target.Gain * likely(vstate == Playing)};
+                    const float TargetGain{parms.Hrtf.Target.Gain * (vstate == Playing)};
                     DoHrtfMix(samples, DstBufferSize, parms, TargetGain, Counter, OutPos,
                         (vstate == Playing), Device);
                 }
                 else
                 {
-                    const float *TargetGains{likely(vstate == Playing) ? parms.Gains.Target.data()
+                    const float *TargetGains{(vstate == Playing) ? parms.Gains.Target.data()
                         : SilentTarget.data()};
                     if(mFlags.test(VoiceHasNfc))
                         DoNfcMix({samples, DstBufferSize}, mDirect.Buffer.data(), parms,
@@ -747,7 +741,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
                 const float *samples{DoFilters(parms.LowPass, parms.HighPass, FilterBuf.data(),
                     {ResampledData, DstBufferSize}, mSend[send].FilterType)};
 
-                const float *TargetGains{likely(vstate == Playing) ? parms.Gains.Target.data()
+                const float *TargetGains{(vstate == Playing) ? parms.Gains.Target.data()
                     : SilentTarget.data()};
                 MixSamples({samples, DstBufferSize}, mSend[send].Buffer,
                     parms.Gains.Current.data(), TargetGains, Counter, OutPos);
@@ -755,7 +749,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
         }
     skip_mix:
         /* If the voice is stopping, we're now done. */
-        if(unlikely(vstate == Stopping))
+        if(vstate == Stopping) [[unlikely]]
             break;
 
         /* Update positions */
@@ -770,7 +764,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
         /* Do nothing extra when there's no buffers, or if the voice position
          * is still negative.
          */
-        if(unlikely(!BufferListItem) || unlikely(DataPosInt < 0))
+        if(!BufferListItem || DataPosInt < 0) [[unlikely]]
             continue;
 
         if(mFlags.test(VoiceIsStatic))
@@ -834,7 +828,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
     mFlags.set(VoiceIsFading);
 
     /* Don't update positions and buffers if we were stopping. */
-    if(unlikely(vstate == Stopping))
+    if(vstate == Stopping) [[unlikely]]
     {
         mPlayState.store(Stopped, std::memory_order_release);
         return;
@@ -888,7 +882,7 @@ void Voice::prepare(DeviceBase *device)
      */
     uint num_channels{(mFmtChannels == FmtUHJ2 || mFmtChannels == FmtSuperStereo) ? 3 :
         ChannelsFromFmt(mFmtChannels, minu(mAmbiOrder, device->mAmbiOrder))};
-    if(unlikely(num_channels > device->mSampleData.size()))
+    if(num_channels > device->mSampleData.size()) [[unlikely]]
     {
         ERR("Unexpected channel count: %u (limit: %zu, %d:%d)\n", num_channels,
             device->mSampleData.size(), mFmtChannels, mAmbiOrder);

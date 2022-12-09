@@ -405,7 +405,7 @@ std::unique_ptr<HrtfStore> CreateHrtfStore(uint rate, ushort irSize,
         auto delays_ = reinterpret_cast<ubyte2*>(base + offset);
         offset += sizeof(delays_[0])*irCount;
 
-        if(unlikely(offset != total))
+        if(offset != total)
             throw std::runtime_error{"HrtfStore allocation size mismatch"};
 
         /* Copy input data to storage. */
@@ -1433,7 +1433,7 @@ void HrtfStore::add_ref()
     TRACE("HrtfStore %p increasing refcount to %u\n", decltype(std::declval<void*>()){this}, ref);
 }
 
-void HrtfStore::release()
+void HrtfStore::dec_ref()
 {
     auto ref = DecrementRef(mRef);
     TRACE("HrtfStore %p decreasing refcount to %u\n", decltype(std::declval<void*>()){this}, ref);

@@ -539,6 +539,12 @@ constexpr struct {
 
     DECL(ALC_OUTPUT_LIMITER_SOFT),
 
+    DECL(ALC_DEVICE_CLOCK_SOFT),
+    DECL(ALC_DEVICE_LATENCY_SOFT),
+    DECL(ALC_DEVICE_CLOCK_LATENCY_SOFT),
+    DECL(AL_SAMPLE_OFFSET_CLOCK_SOFT),
+    DECL(AL_SEC_OFFSET_CLOCK_SOFT),
+
     DECL(ALC_OUTPUT_MODE_SOFT),
     DECL(ALC_ANY_SOFT),
     DECL(ALC_STEREO_BASIC_SOFT),
@@ -665,6 +671,9 @@ constexpr struct {
     DECL(AL_PACK_BLOCK_ALIGNMENT_SOFT),
 
     DECL(AL_SOURCE_RADIUS),
+
+    DECL(AL_SAMPLE_OFFSET_LATENCY_SOFT),
+    DECL(AL_SEC_OFFSET_LATENCY_SOFT),
 
     DECL(AL_STEREO_ANGLES),
 
@@ -2405,7 +2414,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
 bool ResetDeviceParams(ALCdevice *device, const int *attrList)
 {
     /* If the device was disconnected, reset it since we're opened anew. */
-    if UNLIKELY(!device->Connected.load(std::memory_order_relaxed))
+    if(!device->Connected.load(std::memory_order_relaxed)) [[unlikely]]
     {
         /* Make sure disconnection is finished before continuing on. */
         device->waitForMix();
@@ -2437,7 +2446,7 @@ bool ResetDeviceParams(ALCdevice *device, const int *attrList)
     }
 
     ALCenum err{UpdateDeviceParams(device, attrList)};
-    if LIKELY(err == ALC_NO_ERROR) return ALC_TRUE;
+    if(err == ALC_NO_ERROR) [[likely]] return ALC_TRUE;
 
     alcSetError(device, err);
     return ALC_FALSE;

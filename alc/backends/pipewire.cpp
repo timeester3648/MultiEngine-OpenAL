@@ -474,7 +474,7 @@ struct EventManager {
      */
     void waitForInit()
     {
-        if(unlikely(!mInitDone.load(std::memory_order_acquire)))
+        if(!mInitDone.load(std::memory_order_acquire)) [[unlikely]]
         {
             MainloopUniqueLock plock{mLoop};
             plock.wait([this](){ return mInitDone.load(std::memory_order_acquire); });
@@ -857,7 +857,7 @@ void NodeProxy::infoCallback(const pw_node_info *info)
     {
         /* Can this actually change? */
         const char *media_class{spa_dict_lookup(info->props, PW_KEY_MEDIA_CLASS)};
-        if(unlikely(!media_class)) return;
+        if(!media_class) [[unlikely]] return;
 
         NodeType ntype{};
         if(al::strcasecmp(media_class, AudioSinkClass) == 0)
@@ -901,7 +901,7 @@ void NodeProxy::paramCallback(int, uint32_t id, uint32_t, uint32_t, const spa_po
     if(id == SPA_PARAM_EnumFormat)
     {
         DeviceNode *node{DeviceNode::Find(mId)};
-        if(unlikely(!node)) return;
+        if(!node) [[unlikely]] return;
 
         if(const spa_pod_prop *prop{spa_pod_find_prop(param, nullptr, SPA_FORMAT_AUDIO_rate)})
             node->parseSampleRate(&prop->value);
@@ -1326,7 +1326,7 @@ void PipeWirePlayback::ioChangedCallback(uint32_t id, void *area, uint32_t size)
 void PipeWirePlayback::outputCallback()
 {
     pw_buffer *pw_buf{pw_stream_dequeue_buffer(mStream.get())};
-    if(unlikely(!pw_buf)) return;
+    if(!pw_buf) [[unlikely]] return;
 
     const al::span<spa_data> datas{pw_buf->buffer->datas,
         minu(mNumChannels, pw_buf->buffer->n_datas)};
@@ -1342,7 +1342,7 @@ void PipeWirePlayback::outputCallback()
     uint length{mRateMatch ? mRateMatch->size : 0u};
 #endif
     /* If no length is specified, use the device's update size as a fallback. */
-    if(unlikely(!length)) length = mDevice->UpdateSize;
+    if(!length) [[unlikely]] length = mDevice->UpdateSize;
 
     /* For planar formats, each datas[] seems to contain one channel, so store
      * the pointers in an array. Limit the render length in case the available
@@ -1487,10 +1487,11 @@ bool PipeWirePlayback::reset()
             {
                 /* Scale the update size if the sample rate changes. */
                 const double scale{static_cast<double>(match->mSampleRate) / mDevice->Frequency};
+                const double numbufs{static_cast<double>(mDevice->BufferSize)/mDevice->UpdateSize};
                 mDevice->Frequency = match->mSampleRate;
                 mDevice->UpdateSize = static_cast<uint>(clampd(mDevice->UpdateSize*scale + 0.5,
                     64.0, 8192.0));
-                mDevice->BufferSize = mDevice->UpdateSize * 2;
+                mDevice->BufferSize = static_cast<uint>(numbufs*mDevice->UpdateSize + 0.5);
             }
             if(!mDevice->Flags.test(ChannelsRequest) && match->mChannels != InvalidChannelConfig)
                 mDevice->FmtChans = match->mChannels;
@@ -1516,7 +1517,13 @@ bool PipeWirePlayback::reset()
         throw al::backend_exception{al::backend_error::DeviceError,
             "Failed to set PipeWire audio format parameters"};
 
-    pw_properties *props{pw_properties_new(
+    /* TODO: Which properties are actually needed here? Any others that could
+     * be useful?
+     */
+    auto&& binary = GetProcBinary();
+    const char *appname{binary.fname.length() ? binary.fname.c_str() : "OpenAL Soft"};
+    pw_properties *props{pw_properties_new(PW_KEY_NODE_NAME, appname,
+        PW_KEY_NODE_DESCRIPTION, appname,
         PW_KEY_MEDIA_TYPE, "Audio",
         PW_KEY_MEDIA_CATEGORY, "Playback",
         PW_KEY_MEDIA_ROLE, "Game",
@@ -1526,13 +1533,6 @@ bool PipeWirePlayback::reset()
         throw al::backend_exception{al::backend_error::DeviceError,
             "Failed to create PipeWire stream properties (errno: %d)", errno};
 
-    auto&& binary = GetProcBinary();
-    const char *appname{binary.fname.length() ? binary.fname.c_str() : "OpenAL Soft"};
-    /* TODO: Which properties are actually needed here? Any others that could
-     * be useful?
-     */
-    pw_properties_set(props, PW_KEY_NODE_NAME, appname);
-    pw_properties_set(props, PW_KEY_NODE_DESCRIPTION, appname);
     pw_properties_setf(props, PW_KEY_NODE_LATENCY, "%u/%u", mDevice->UpdateSize,
         mDevice->Frequency);
     pw_properties_setf(props, PW_KEY_NODE_RATE, "1/%u", mDevice->Frequency);
@@ -1563,10 +1563,12 @@ bool PipeWirePlayback::reset()
         return state == PW_STREAM_STATE_PAUSED;
     });
 
-    /* TODO: Update mDevice->BufferSize with the total known buffering delay
-     * from the head of this playback stream to the tail of the device output.
+    /* TODO: Update mDevice->UpdateSize with the stream's quantum, and
+     * mDevice->BufferSize with the total known buffering delay from the head
+     * of this playback stream to the tail of the device output.
+     *
+     * This info is apparently not available until after the stream starts.
      */
-    mDevice->BufferSize = mDevice->UpdateSize * 2;
     plock.unlock();
 
     mNumChannels = mDevice->channelsFromFmt();
@@ -1598,9 +1600,10 @@ void PipeWirePlayback::start()
     });
 
     /* HACK: Try to work out the update size and total buffering size. There's
-     * no simple query for this, so we have to work it out from the stream time
-     * info. The stream time info may also not be available right away, so we
-     * have to wait until it is (up to about 2 seconds).
+     * no actual query for this, so we have to work it out from the stream time
+     * info, and assume it stays accurate with future updates. The stream time
+     * info may also not be available right away, so we have to wait until it
+     * is (up to about 2 seconds).
      */
     int wait_count{100};
     pw_stream_state state{PW_STREAM_STATE_STREAMING};
@@ -1613,6 +1616,7 @@ void PipeWirePlayback::start()
             break;
         }
 
+#if PW_CHECK_VERSION(0,3,50)
         /* The time info will be valid when there's a valid rate. Assume
          * ptime.avail_buffers+ptime.queued_buffers is the target buffer queue
          * size.
@@ -1633,6 +1637,24 @@ void PipeWirePlayback::start()
                 totalbuffers*updatesize);
             break;
         }
+#else
+        /* Prior to 0.3.50, we can only measure the delay with the update size,
+         * assuming one buffer and no resample buffering.
+         */
+        if(ptime.rate.denom > 0)
+        {
+            uint updatesize{mRateMatch ? mRateMatch->size : 0u};
+            if(!updatesize) updatesize = mDevice->UpdateSize;
+
+            /* Ensure the delay is in sample frames. */
+            const uint64_t delay{static_cast<uint64_t>(ptime.delay) * mDevice->Frequency *
+                ptime.rate.num / ptime.rate.denom};
+
+            mDevice->UpdateSize = updatesize;
+            mDevice->BufferSize = static_cast<uint>(delay + updatesize);
+            break;
+        }
+#endif
         if(!--wait_count)
             break;
 
@@ -1690,7 +1712,7 @@ ClockLatency PipeWirePlayback::getClockLatency()
      */
     nanoseconds monoclock{seconds{tspec.tv_sec} + nanoseconds{tspec.tv_nsec}};
     nanoseconds curtic{}, delay{};
-    if(unlikely(ptime.rate.denom < 1))
+    if(ptime.rate.denom < 1) [[unlikely]]
     {
         /* If there's no stream rate, the stream hasn't had a chance to get
          * going and return time info yet. Just use dummy values.
@@ -1788,7 +1810,7 @@ void PipeWireCapture::stateChangedCallback(pw_stream_state, pw_stream_state, con
 void PipeWireCapture::inputCallback()
 {
     pw_buffer *pw_buf{pw_stream_dequeue_buffer(mStream.get())};
-    if(unlikely(!pw_buf)) return;
+    if(!pw_buf) [[unlikely]] return;
 
     spa_data *bufdata{pw_buf->buffer->datas};
     const uint offset{minu(bufdata->chunk->offset, bufdata->maxsize)};
@@ -1922,7 +1944,11 @@ void PipeWireCapture::open(const char *name)
         throw al::backend_exception{al::backend_error::DeviceError,
             "Failed to set PipeWire audio format parameters"};
 
+    auto&& binary = GetProcBinary();
+    const char *appname{binary.fname.length() ? binary.fname.c_str() : "OpenAL Soft"};
     pw_properties *props{pw_properties_new(
+        PW_KEY_NODE_NAME, appname,
+        PW_KEY_NODE_DESCRIPTION, appname,
         PW_KEY_MEDIA_TYPE, "Audio",
         PW_KEY_MEDIA_CATEGORY, "Capture",
         PW_KEY_MEDIA_ROLE, "Game",
@@ -1932,10 +1958,6 @@ void PipeWireCapture::open(const char *name)
         throw al::backend_exception{al::backend_error::DeviceError,
             "Failed to create PipeWire stream properties (errno: %d)", errno};
 
-    auto&& binary = GetProcBinary();
-    const char *appname{binary.fname.length() ? binary.fname.c_str() : "OpenAL Soft"};
-    pw_properties_set(props, PW_KEY_NODE_NAME, appname);
-    pw_properties_set(props, PW_KEY_NODE_DESCRIPTION, appname);
     /* We don't actually care what the latency/update size is, as long as it's
      * reasonable. Unfortunately, when unspecified PipeWire seems to default to
      * around 40ms, which isn't great. So request 20ms instead.
