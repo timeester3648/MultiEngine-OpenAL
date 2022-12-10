@@ -40,7 +40,7 @@ project "OpenAL"
 		"AL_LIBTYPE_STATIC"
 	}
 
-	filter "action:vs*"
+	filter "toolset:msc"
 		disablewarnings { "5030", "4065", "4834" }
 
  	filter "system:windows"
