@@ -148,6 +148,7 @@ struct ALCcontext : public al::intrusive_ref<ALCcontext>, ContextBase {
     void setError(ALenum errorCode, const char *msg, ...);
 
     /* Process-wide current context */
+    static std::atomic<bool> sGlobalContextLock;
     static std::atomic<ALCcontext*> sGlobalContext;
 
 private:
@@ -513,12 +514,6 @@ private:
     void eax_commit();
 #endif // ALSOFT_EAX
 };
-
-#define SETERR_RETURN(ctx, err, retval, ...) do {                             \
-    (ctx)->setError((err), __VA_ARGS__);                                      \
-    return retval;                                                            \
-} while(0)
-
 
 using ContextRef = al::intrusive_ptr<ALCcontext>;
 

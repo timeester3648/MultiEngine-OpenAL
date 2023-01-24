@@ -71,7 +71,20 @@ using HrtfMixerBlendFunc = void(*)(const float *InSamples, float2 *AccumSamples,
 HrtfMixerFunc MixHrtfSamples{MixHrtf_<CTag>};
 HrtfMixerBlendFunc MixHrtfBlendSamples{MixHrtfBlend_<CTag>};
 
-inline MixerFunc SelectMixer()
+inline MixerOutFunc SelectMixer()
+{
+#ifdef HAVE_NEON
+    if((CPUCapFlags&CPU_CAP_NEON))
+        return Mix_<NEONTag>;
+#endif
+#ifdef HAVE_SSE
+    if((CPUCapFlags&CPU_CAP_SSE))
+        return Mix_<SSETag>;
+#endif
+    return Mix_<CTag>;
+}
+
+inline MixerOneFunc SelectMixerOne()
 {
 #ifdef HAVE_NEON
     if((CPUCapFlags&CPU_CAP_NEON))
@@ -152,7 +165,8 @@ void Voice::InitMixer(al::optional<std::string> resampler)
             ResamplerDefault = iter->resampler;
     }
 
-    MixSamples = SelectMixer();
+    MixSamplesOut = SelectMixer();
+    MixSamplesOne = SelectMixerOne();
     MixHrtfBlendSamples = SelectHrtfBlendMixer();
     MixHrtfSamples = SelectHrtfMixer();
 }
@@ -297,14 +311,15 @@ void LoadBufferStatic(VoiceBufferItem *buffer, VoiceBufferItem *&bufferLoopItem,
 
 void LoadBufferCallback(VoiceBufferItem *buffer, const size_t numCallbackSamples,
     const FmtType sampleType, const FmtChannels sampleChannels, const size_t srcStep,
-    const size_t samplesToLoad, const al::span<float*> voiceSamples)
+    size_t samplesLoaded, const size_t samplesToLoad, const al::span<float*> voiceSamples)
 {
     /* Load what's left to play from the buffer */
-    const size_t remaining{minz(samplesToLoad, numCallbackSamples)};
-    LoadSamples(voiceSamples, 0, buffer->mSamples, 0, sampleType, sampleChannels, srcStep,
-        remaining);
+    const size_t remaining{minz(samplesToLoad-samplesLoaded, numCallbackSamples)};
+    LoadSamples(voiceSamples, samplesLoaded, buffer->mSamples, 0, sampleType, sampleChannels,
+        srcStep, remaining);
+    samplesLoaded += remaining;
 
-    if(const size_t toFill{samplesToLoad - remaining})
+    if(const size_t toFill{samplesToLoad - samplesLoaded})
     {
         for(auto *chanbuffer : voiceSamples)
         {
@@ -649,10 +664,11 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
                     mFmtChannels, mFrameStep, samplesLoaded, SrcBufferSize, MixingSamples);
             else if(mFlags.test(VoiceIsCallback))
             {
-                if(!mFlags.test(VoiceCallbackStopped) && SrcBufferSize > mNumCallbackSamples)
+                const size_t remaining{SrcBufferSize - samplesLoaded};
+                if(!mFlags.test(VoiceCallbackStopped) && remaining > mNumCallbackSamples)
                 {
                     const size_t byteOffset{mNumCallbackSamples*mFrameSize};
-                    const size_t needBytes{SrcBufferSize*mFrameSize - byteOffset};
+                    const size_t needBytes{remaining*mFrameSize - byteOffset};
 
                     const int gotBytes{BufferListItem->mCallback(BufferListItem->mUserData,
                         &BufferListItem->mSamples[byteOffset], static_cast<int>(needBytes))};
@@ -664,10 +680,10 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
                         mNumCallbackSamples += static_cast<uint>(gotBytes) / mFrameSize;
                     }
                     else
-                        mNumCallbackSamples = SrcBufferSize;
+                        mNumCallbackSamples = static_cast<uint>(remaining);
                 }
                 LoadBufferCallback(BufferListItem, mNumCallbackSamples, mFmtType, mFmtChannels,
-                    mFrameStep, SrcBufferSize, MixingSamples);
+                    mFrameStep, samplesLoaded, SrcBufferSize, MixingSamples);
             }
             else
                 LoadBufferQueue(BufferListItem, BufferLoopItem, DataPosUInt, mFmtType, mFmtChannels,
@@ -849,8 +865,8 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
     std::atomic_thread_fence(std::memory_order_release);
 
     /* Send any events now, after the position/buffer info was updated. */
-    const uint enabledevt{Context->mEnabledEvts.load(std::memory_order_acquire)};
-    if(buffers_done > 0 && (enabledevt&AsyncEvent::BufferCompleted))
+    const auto enabledevt = Context->mEnabledEvts.load(std::memory_order_acquire);
+    if(buffers_done > 0 && enabledevt.test(AsyncEvent::BufferCompleted))
     {
         RingBuffer *ring{Context->mAsyncEvents.get()};
         auto evt_vec = ring->getWriteVector();
@@ -870,7 +886,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
          * ensures any residual noise fades to 0 amplitude.
          */
         mPlayState.store(Stopping, std::memory_order_release);
-        if((enabledevt&AsyncEvent::SourceStateChange))
+        if(enabledevt.test(AsyncEvent::SourceStateChange))
             SendSourceStoppedEvent(Context, SourceID);
     }
 }
@@ -945,10 +961,39 @@ void Voice::prepare(DeviceBase *device)
     /* Make sure the sample history is cleared. */
     std::fill(mPrevSamples.begin(), mPrevSamples.end(), HistoryLine{});
 
+    if(mFmtChannels == FmtUHJ2 && !device->mUhjEncoder)
+    {
+        /* 2-channel UHJ needs different shelf filters. However, we can't just
+         * use different shelf filters after mixing it, given any old speaker
+         * setup the user has. To make this work, we apply the expected shelf
+         * filters for decoding UHJ2 to quad (only needs LF scaling), and act
+         * as if those 4 quad channels are encoded right back into B-Format.
+         *
+         * This isn't perfect, but without an entirely separate and limited
+         * UHJ2 path, it's better than nothing.
+         *
+         * Note this isn't needed with UHJ output (UHJ2->B-Format->UHJ2 is
+         * identity, so don't mess with it).
+         */
+        const BandSplitter splitter{device->mXOverFreq / static_cast<float>(device->Frequency)};
+        for(auto &chandata : mChans)
+        {
+            chandata.mAmbiHFScale = 1.0f;
+            chandata.mAmbiLFScale = 1.0f;
+            chandata.mAmbiSplitter = splitter;
+            chandata.mDryParams = DirectParams{};
+            chandata.mDryParams.NFCtrlFilter = device->mNFCtrlFilter;
+            std::fill_n(chandata.mWetParams.begin(), device->NumAuxSends, SendParams{});
+        }
+        mChans[0].mAmbiLFScale = DecoderBase::sWLFScale;
+        mChans[1].mAmbiLFScale = DecoderBase::sXYLFScale;
+        mChans[2].mAmbiLFScale = DecoderBase::sXYLFScale;
+        mFlags.set(VoiceIsAmbisonic);
+    }
     /* Don't need to set the VoiceIsAmbisonic flag if the device is not higher
      * order than the voice. No HF scaling is necessary to mix it.
      */
-    if(mAmbiOrder && device->mAmbiOrder > mAmbiOrder)
+    else if(mAmbiOrder && device->mAmbiOrder > mAmbiOrder)
     {
         const uint8_t *OrderFromChan{Is2DAmbisonic(mFmtChannels) ?
             AmbiIndex::OrderFrom2DChannel().data() : AmbiIndex::OrderFromChannel().data()};
@@ -965,46 +1010,6 @@ void Voice::prepare(DeviceBase *device)
             chandata.mDryParams.NFCtrlFilter = device->mNFCtrlFilter;
             std::fill_n(chandata.mWetParams.begin(), device->NumAuxSends, SendParams{});
         }
-        /* 2-channel UHJ needs different shelf filters. However, we can't just
-         * use different shelf filters after mixing it, given any old speaker
-         * setup the user has. To make this work, we apply the expected shelf
-         * filters for decoding UHJ2 to quad (only needs LF scaling), and act
-         * as if those 4 quad channels are encoded right back onto higher-order
-         * B-Format.
-         *
-         * This isn't perfect, but without an entirely separate and limited
-         * UHJ2 path, it's better than nothing.
-         */
-        if(mFmtChannels == FmtUHJ2)
-        {
-            mChans[0].mAmbiHFScale = 1.0f;
-            mChans[0].mAmbiLFScale = DecoderBase::sWLFScale;
-            mChans[1].mAmbiHFScale = 1.0f;
-            mChans[1].mAmbiLFScale = DecoderBase::sXYLFScale;
-            mChans[2].mAmbiHFScale = 1.0f;
-            mChans[2].mAmbiLFScale = DecoderBase::sXYLFScale;
-        }
-        mFlags.set(VoiceIsAmbisonic);
-    }
-    else if(mFmtChannels == FmtUHJ2 && !device->mUhjEncoder)
-    {
-        /* 2-channel UHJ with first-order output also needs the shelf filter
-         * correction applied, except with UHJ output (UHJ2->B-Format->UHJ2 is
-         * identity, so don't mess with it).
-         */
-        const BandSplitter splitter{device->mXOverFreq / static_cast<float>(device->Frequency)};
-        for(auto &chandata : mChans)
-        {
-            chandata.mAmbiHFScale = 1.0f;
-            chandata.mAmbiLFScale = 1.0f;
-            chandata.mAmbiSplitter = splitter;
-            chandata.mDryParams = DirectParams{};
-            chandata.mDryParams.NFCtrlFilter = device->mNFCtrlFilter;
-            std::fill_n(chandata.mWetParams.begin(), device->NumAuxSends, SendParams{});
-        }
-        mChans[0].mAmbiLFScale = DecoderBase::sWLFScale;
-        mChans[1].mAmbiLFScale = DecoderBase::sXYLFScale;
-        mChans[2].mAmbiLFScale = DecoderBase::sXYLFScale;
         mFlags.set(VoiceIsAmbisonic);
     }
     else

@@ -116,13 +116,13 @@ inline const char *GetLabelFromChannel(Channel channel)
 std::unique_ptr<FrontStablizer> CreateStablizer(const size_t outchans, const uint srate)
 {
     auto stablizer = FrontStablizer::Create(outchans);
-    for(auto &buf : stablizer->DelayBuf)
-        std::fill(buf.begin(), buf.end(), 0.0f);
 
     /* Initialize band-splitting filter for the mid signal, with a crossover at
      * 5khz (could be higher).
      */
     stablizer->MidFilter.init(5000.0f / static_cast<float>(srate));
+    for(auto &filter : stablizer->ChannelFilters)
+        filter = stablizer->MidFilter;
 
     return stablizer;
 }
@@ -232,7 +232,7 @@ void InitNearFieldCtrl(ALCdevice *device, float ctrl_dist, uint order, bool is3d
     static const uint chans_per_order3d[MaxAmbiOrder+1]{ 1, 3, 5, 7 };
 
     /* NFC is only used when AvgSpeakerDist is greater than 0. */
-    if(!device->getConfigValueBool("decoder", "nfc", 0) || !(ctrl_dist > 0.0f))
+    if(!device->getConfigValueBool("decoder", "nfc", false) || !(ctrl_dist > 0.0f))
         return;
 
     device->AvgSpeakerDist = clampf(ctrl_dist, 0.1f, 10.0f);
@@ -252,7 +252,7 @@ void InitDistanceComp(ALCdevice *device, const al::span<const Channel> channels,
 {
     const float maxdist{std::accumulate(std::begin(dists), std::end(dists), 0.0f, maxf)};
 
-    if(!device->getConfigValueBool("decoder", "distance-comp", 1) || !(maxdist > 0.0f))
+    if(!device->getConfigValueBool("decoder", "distance-comp", true) || !(maxdist > 0.0f))
         return;
 
     const auto distSampleScale = static_cast<float>(device->Frequency) / SpeedOfSoundMetersPerSec;
@@ -263,7 +263,7 @@ void InitDistanceComp(ALCdevice *device, const al::span<const Channel> channels,
     {
         const Channel ch{channels[chidx]};
         const uint idx{device->RealOut.ChannelIndex[ch]};
-        if(idx == INVALID_CHANNEL_INDEX)
+        if(idx == InvalidChannelIndex)
             continue;
 
         const float distance{dists[chidx]};
@@ -275,11 +275,11 @@ void InitDistanceComp(ALCdevice *device, const al::span<const Channel> channels,
          * will be in steps of about 7 millimeters.
          */
         float delay{std::floor((maxdist - distance)*distSampleScale + 0.5f)};
-        if(delay > float{MAX_DELAY_LENGTH-1})
+        if(delay > float{DistanceComp::MaxDelay-1})
         {
             ERR("Delay for channel %u (%s) exceeds buffer length (%f > %d)\n", idx,
-                GetLabelFromChannel(ch), delay, MAX_DELAY_LENGTH-1);
-            delay = float{MAX_DELAY_LENGTH-1};
+                GetLabelFromChannel(ch), delay, DistanceComp::MaxDelay-1);
+            delay = float{DistanceComp::MaxDelay-1};
         }
 
         ChanDelay.resize(maxz(ChanDelay.size(), idx+1));
@@ -339,7 +339,7 @@ DecoderView MakeDecoderView(ALCdevice *device, const AmbDecConf *conf,
 
     switch(conf->CoeffScale)
     {
-    case AmbDecScale::Unset: ASSUME(0); break;
+    case AmbDecScale::Unset: ASSUME(false); break;
     case AmbDecScale::N3D: decoder.mScaling = DevAmbiScaling::N3D; break;
     case AmbDecScale::SN3D: decoder.mScaling = DevAmbiScaling::SN3D; break;
     case AmbDecScale::FuMa: decoder.mScaling = DevAmbiScaling::FuMa; break;
@@ -632,7 +632,7 @@ void InitPanning(ALCdevice *device, const bool hqdec=false, const bool stablize=
     for(size_t i{0u};i < decoder.mChannels.size();++i)
     {
         const uint idx{device->channelIdxByName(decoder.mChannels[i])};
-        if(idx == INVALID_CHANNEL_INDEX)
+        if(idx == InvalidChannelIndex)
         {
             ERR("Failed to find %s channel in device\n",
                 GetLabelFromChannel(decoder.mChannels[i]));
@@ -913,7 +913,7 @@ void InitHrtfPanning(ALCdevice *device)
         AmbiOrderHFGain);
     device->mHrtfState = std::move(hrtfstate);
 
-    InitNearFieldCtrl(device, Hrtf->field[0].distance, ambi_order, true);
+    InitNearFieldCtrl(device, Hrtf->mFields[0].distance, ambi_order, true);
 }
 
 void InitUhjPanning(ALCdevice *device)
@@ -1004,11 +1004,11 @@ void aluInitRenderer(ALCdevice *device, int hrtf_id, al::optional<StereoEncoding
         /* Enable the stablizer only for formats that have front-left, front-
          * right, and front-center outputs.
          */
-        const bool stablize{device->RealOut.ChannelIndex[FrontCenter] != INVALID_CHANNEL_INDEX
-            && device->RealOut.ChannelIndex[FrontLeft] != INVALID_CHANNEL_INDEX
-            && device->RealOut.ChannelIndex[FrontRight] != INVALID_CHANNEL_INDEX
-            && device->getConfigValueBool(nullptr, "front-stablizer", 0) != 0};
-        const bool hqdec{device->getConfigValueBool("decoder", "hq-mode", 1) != 0};
+        const bool stablize{device->RealOut.ChannelIndex[FrontCenter] != InvalidChannelIndex
+            && device->RealOut.ChannelIndex[FrontLeft] != InvalidChannelIndex
+            && device->RealOut.ChannelIndex[FrontRight] != InvalidChannelIndex
+            && device->getConfigValueBool(nullptr, "front-stablizer", false) != 0};
+        const bool hqdec{device->getConfigValueBool("decoder", "hq-mode", true) != 0};
         InitPanning(device, hqdec, stablize, decoder);
         if(decoder)
         {
@@ -1075,7 +1075,7 @@ void aluInitRenderer(ALCdevice *device, int hrtf_id, al::optional<StereoEncoding
             old_hrtf = nullptr;
 
             HrtfStore *hrtf{device->mHrtf.get()};
-            device->mIrSize = hrtf->irSize;
+            device->mIrSize = hrtf->mIrSize;
             if(auto hrtfsizeopt = device->configValue<uint>(nullptr, "hrtf-size"))
             {
                 if(*hrtfsizeopt > 0 && *hrtfsizeopt < device->mIrSize)

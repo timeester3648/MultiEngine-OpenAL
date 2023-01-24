@@ -53,7 +53,7 @@ al::optional<std::string> make_error(size_t linenum, const char *fmt, ...)
     auto &str = ret.emplace();
 
     str.resize(256);
-    int printed{std::snprintf(&str[0], str.length(), "Line %zu: ", linenum)};
+    int printed{std::snprintf(const_cast<char*>(str.data()), str.length(), "Line %zu: ", linenum)};
     if(printed < 0) printed = 0;
     auto plen = std::min(static_cast<size_t>(printed), str.length());
 
@@ -81,7 +81,7 @@ al::optional<std::string> AmbDecConf::load(const char *fname) noexcept
 {
     al::ifstream f{fname};
     if(!f.is_open())
-        return al::make_optional(std::string("Failed to open file \"")+fname+"\"");
+        return std::string("Failed to open file \"")+fname+"\"";
 
     ReaderScope scope{ReaderScope::Global};
     size_t speaker_pos{0};

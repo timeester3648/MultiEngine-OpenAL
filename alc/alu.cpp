@@ -366,10 +366,10 @@ void UpsampleBFormatTransform(size_t coeffs_order,
     {
         for(size_t j{0};j < num_chans;++j)
         {
-            double sum{0.0};
+            float sum{0.0};
             for(size_t k{0};k < num_chans;++k)
-                sum += double{matrix1[i][k]} * matrix2[j][k];
-            coeffs[j][i] = static_cast<float>(sum);
+                sum += matrix1[i][k] * matrix2[j][k];
+            coeffs[j][i] = sum;
         }
     }
 }
@@ -866,7 +866,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
          * scaling.
          */
         std::transform(coeffs.begin(), coeffs.end(), coeffs.begin(),
-            std::bind(std::multiplies<float>{}, _1, (1.0f-coverage)*scales[0]));
+            [scale=(1.0f-coverage)*scales[0]](const float c){ return c * scale; });
 
         if(!(coverage > 0.0f))
         {
@@ -993,7 +993,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
         for(size_t c{0};c < num_channels;c++)
         {
             uint idx{Device->channelIdxByName(chans[c].channel)};
-            if(idx != INVALID_CHANNEL_INDEX)
+            if(idx != InvalidChannelIndex)
                 voice->mChans[c].mDryParams.Gains.Target[idx] = DryGain.Base;
             else if(DirectChannels == DirectMode::RemixMismatch)
             {
@@ -1006,7 +1006,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                     for(const auto &target : remap->targets)
                     {
                         idx = Device->channelIdxByName(target.channel);
-                        if(idx != INVALID_CHANNEL_INDEX)
+                        if(idx != InvalidChannelIndex)
                             voice->mChans[c].mDryParams.Gains.Target[idx] = DryGain.Base *
                                 target.mix;
                     }
@@ -1047,7 +1047,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
 
             if(voice->mFmtChannels == FmtMono)
             {
-                GetHrtfCoeffs(Device->mHrtf.get(), src_ev, src_az, Distance*NfcScale, Spread,
+                Device->mHrtf->getCoeffs(src_ev, src_az, Distance*NfcScale, Spread,
                     voice->mChans[0].mDryParams.Hrtf.Target.Coeffs,
                     voice->mChans[0].mDryParams.Hrtf.Target.Delay);
                 voice->mChans[0].mDryParams.Hrtf.Target.Gain = DryGain.Base;
@@ -1084,7 +1084,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                 if(az < -pi_v<float>) az += pi_v<float>*2.0f;
                 else if(az > pi_v<float>) az -= pi_v<float>*2.0f;
 
-                GetHrtfCoeffs(Device->mHrtf.get(), ev, az, Distance*NfcScale, 0.0f,
+                Device->mHrtf->getCoeffs(ev, az, Distance*NfcScale, 0.0f,
                     voice->mChans[c].mDryParams.Hrtf.Target.Coeffs,
                     voice->mChans[c].mDryParams.Hrtf.Target.Delay);
                 voice->mChans[c].mDryParams.Hrtf.Target.Gain = DryGain.Base;
@@ -1119,7 +1119,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                 /* Get the HRIR coefficients and delays for this channel
                  * position.
                  */
-                GetHrtfCoeffs(Device->mHrtf.get(), chans[c].elevation, chans[c].angle,
+                Device->mHrtf->getCoeffs(chans[c].elevation, chans[c].angle,
                     std::numeric_limits<float>::infinity(), spread,
                     voice->mChans[c].mDryParams.Hrtf.Target.Coeffs,
                     voice->mChans[c].mDryParams.Hrtf.Target.Delay);
@@ -1197,7 +1197,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                         if(Device->Dry.Buffer.data() == Device->RealOut.Buffer.data())
                         {
                             const uint idx{Device->channelIdxByName(chans[c].channel)};
-                            if(idx != INVALID_CHANNEL_INDEX)
+                            if(idx != InvalidChannelIndex)
                                 voice->mChans[c].mDryParams.Gains.Target[idx] = DryGain.Base;
                         }
                         continue;
@@ -1263,7 +1263,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                     if(Device->Dry.Buffer.data() == Device->RealOut.Buffer.data())
                     {
                         const uint idx{Device->channelIdxByName(chans[c].channel)};
-                        if(idx != INVALID_CHANNEL_INDEX)
+                        if(idx != InvalidChannelIndex)
                             voice->mChans[c].mDryParams.Gains.Target[idx] = DryGain.Base;
                     }
                     continue;
@@ -1714,7 +1714,7 @@ void SendSourceStateEvent(ContextBase *context, uint id, VChangeState state)
         break;
     /* Shouldn't happen. */
     case VChangeState::Restart:
-        ASSUME(0);
+        al::unreachable();
     }
 
     ring->writeAdvance(1);
@@ -1726,7 +1726,7 @@ void ProcessVoiceChanges(ContextBase *ctx)
     VoiceChange *next{cur->mNext.load(std::memory_order_acquire)};
     if(!next) return;
 
-    const uint enabledevt{ctx->mEnabledEvts.load(std::memory_order_acquire)};
+    const auto enabledevt = ctx->mEnabledEvts.load(std::memory_order_acquire);
     do {
         cur = next;
 
@@ -1807,7 +1807,7 @@ void ProcessVoiceChanges(ContextBase *ctx)
             }
             oldvoice->mPendingChange.store(false, std::memory_order_release);
         }
-        if(sendevt && (enabledevt&AsyncEvent::SourceStateChange))
+        if(sendevt && enabledevt.test(AsyncEvent::SourceStateChange))
             SendSourceStateEvent(ctx, cur->mSourceID, cur->mState);
 
         next = cur->mNext.load(std::memory_order_acquire);
@@ -1966,7 +1966,7 @@ void ApplyDistanceComp(const al::span<FloatBufferLine> Samples, const size_t Sam
             auto delay_start = std::swap_ranges(inout, inout_end, distbuf);
             std::rotate(distbuf, delay_start, distbuf + base);
         }
-        std::transform(inout, inout_end, inout, std::bind(std::multiplies<float>{}, _1, gain));
+        std::transform(inout, inout_end, inout, [gain](auto a){ return a * gain; });
     }
 }
 
@@ -2172,8 +2172,7 @@ void DeviceBase::handleDisconnect(const char *msg, ...)
 
         for(ContextBase *ctx : *mContexts.load())
         {
-            const uint enabledevt{ctx->mEnabledEvts.load(std::memory_order_acquire)};
-            if((enabledevt&AsyncEvent::Disconnected))
+            if(ctx->mEnabledEvts.load(std::memory_order_acquire).test(AsyncEvent::Disconnected))
             {
                 RingBuffer *ring{ctx->mAsyncEvents.get()};
                 auto evt_data = ring->getWriteVector().first;

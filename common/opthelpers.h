@@ -12,7 +12,7 @@
 #endif
 
 #ifdef __GNUC__
-#define force_inline [[gnu::always_inline]]
+#define force_inline [[gnu::always_inline]] inline
 #elif defined(_MSC_VER)
 #define force_inline __forceinline
 #else
@@ -30,7 +30,7 @@
 #define ASSUME __assume
 #elif __has_attribute(assume)
 #define ASSUME(x) [[assume(x)]]
-#elif defined(__GNUC__)
+#elif HAS_BUILTIN(__builtin_unreachable)
 #define ASSUME(x) do { if(x) break; __builtin_unreachable(); } while(0)
 #else
 #define ASSUME(x) ((void)0)
@@ -38,12 +38,25 @@
 
 namespace al {
 
+template<typename T>
+constexpr std::underlying_type_t<T> to_underlying(T e) noexcept
+{ return static_cast<std::underlying_type_t<T>>(e); }
+
+[[noreturn]] inline void unreachable()
+{
+#if HAS_BUILTIN(__builtin_unreachable)
+    __builtin_unreachable();
+#else
+    ASSUME(false);
+#endif
+}
+
 template<std::size_t alignment, typename T>
 force_inline constexpr auto assume_aligned(T *ptr) noexcept
 {
 #ifdef __cpp_lib_assume_aligned
     return std::assume_aligned<alignment,T>(ptr);
-#elif defined(__clang__) || (defined(__GNUC__) && !defined(__ICC))
+#elif HAS_BUILTIN(__builtin_assume_aligned)
     return static_cast<T*>(__builtin_assume_aligned(ptr, alignment));
 #elif defined(_MSC_VER)
     constexpr std::size_t alignment_mask{(1<<alignment) - 1};

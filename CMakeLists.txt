@@ -30,6 +30,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     endif()
 endif()
 
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+
 if(COMMAND CMAKE_POLICY)
     cmake_policy(SET CMP0003 NEW)
     cmake_policy(SET CMP0005 NEW)
@@ -42,6 +45,12 @@ if(COMMAND CMAKE_POLICY)
     if(POLICY CMP0054)
         cmake_policy(SET CMP0054 NEW)
     endif(POLICY CMP0054)
+    if(POLICY CMP0058)
+        cmake_policy(SET CMP0058 NEW)
+    endif(POLICY CMP0058)
+    if(POLICY CMP0063)
+        cmake_policy(SET CMP0063 NEW)
+    endif(POLICY CMP0063)
     if(POLICY CMP0075)
         cmake_policy(SET CMP0075 NEW)
     endif(POLICY CMP0075)
@@ -230,7 +239,7 @@ if(MSVC)
     if(HAVE_PERMISSIVE_SWITCH)
         set(C_FLAGS ${C_FLAGS} $<$<COMPILE_LANGUAGE:CXX>:/permissive->)
     endif()
-    set(C_FLAGS ${C_FLAGS} /W4 /w14640 /wd4065 /wd4127 /wd4268 /wd4324 /wd5030)
+    set(C_FLAGS ${C_FLAGS} /W4 /w14640 /wd4065 /wd4127 /wd4268 /wd4324 /wd5030 /wd5051)
 
     if(NOT DXSDK_DIR)
         string(REGEX REPLACE "\\\\" "/" DXSDK_DIR "$ENV{DXSDK_DIR}")
@@ -348,13 +357,6 @@ else()
             if(NOT LIBTYPE STREQUAL "STATIC")
                 set(EXPORT_DECL "__attribute__((visibility(\"default\")))")
             endif()
-        endif()
-    endif()
-
-    if(HAVE_GCC_PROTECTED_VISIBILITY OR HAVE_GCC_DEFAULT_VISIBILITY)
-        check_c_compiler_flag(-fvisibility=hidden HAVE_VISIBILITY_HIDDEN_SWITCH)
-        if(HAVE_VISIBILITY_HIDDEN_SWITCH)
-            set(C_FLAGS ${C_FLAGS} -fvisibility=hidden)
         endif()
     endif()
 
@@ -1137,17 +1139,7 @@ set(OBOE_TARGET )
 if(ANDROID)
     set(OBOE_SOURCE "" CACHE STRING "Source directory for Oboe.")
     if(OBOE_SOURCE)
-        # Force Oboe to build with hidden symbols. Don't want to be exporting
-        # them from OpenAL.
-        set(OLD_CXX_FLAGS ${CMAKE_CXX_FLAGS})
-        check_cxx_compiler_flag(-fvisibility=hidden HAVE_VISIBILITY_HIDDEN_SWITCH)
-        if(HAVE_VISIBILITY_HIDDEN_SWITCH)
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden")
-        endif()
         add_subdirectory(${OBOE_SOURCE} ./oboe)
-        set(CMAKE_CXX_FLAGS ${OLD_CXX_FLAGS})
-        unset(OLD_CXX_FLAGS)
-
         set(OBOE_TARGET oboe)
     else()
         find_package(oboe CONFIG)
@@ -1208,13 +1200,19 @@ set(BACKENDS  "${BACKENDS} Null")
 find_package(Git)
 if(ALSOFT_UPDATE_BUILD_VERSION AND GIT_FOUND AND EXISTS "${OpenAL_SOURCE_DIR}/.git")
     # Get the current working branch and its latest abbreviated commit hash
-    add_custom_target(build_version
-        ${CMAKE_COMMAND} -D GIT_EXECUTABLE=${GIT_EXECUTABLE} -D LIB_VERSION=${LIB_VERSION}
+    add_custom_command(OUTPUT "${OpenAL_BINARY_DIR}/version_witness.txt"
+        BYPRODUCTS "${OpenAL_BINARY_DIR}/version.h"
+        COMMAND ${CMAKE_COMMAND} -D GIT_EXECUTABLE=${GIT_EXECUTABLE} -D LIB_VERSION=${LIB_VERSION}
             -D LIB_VERSION_NUM=${LIB_VERSION_NUM} -D SRC=${OpenAL_SOURCE_DIR}/version.h.in
             -D DST=${OpenAL_BINARY_DIR}/version.h -P ${OpenAL_SOURCE_DIR}/version.cmake
+        COMMAND ${CMAKE_COMMAND} -E touch "${OpenAL_BINARY_DIR}/version_witness.txt"
         WORKING_DIRECTORY "${OpenAL_SOURCE_DIR}"
+        MAIN_DEPENDENCY "${OpenAL_SOURCE_DIR}/version.h.in"
+        DEPENDS "${OpenAL_SOURCE_DIR}/.git/index" "${OpenAL_SOURCE_DIR}/version.cmake"
         VERBATIM
     )
+
+    add_custom_target(build_version DEPENDS "${OpenAL_BINARY_DIR}/version_witness.txt")
 else()
     set(GIT_BRANCH "UNKNOWN")
     set(GIT_COMMIT_HASH "unknown")
@@ -1228,11 +1226,11 @@ option(ALSOFT_EMBED_HRTF_DATA "Embed the HRTF data files (increases library foot
 if(ALSOFT_EMBED_HRTF_DATA)
     macro(make_hrtf_header FILENAME VARNAME)
         set(infile  "${OpenAL_SOURCE_DIR}/hrtf/${FILENAME}")
-        set(outfile  "${OpenAL_BINARY_DIR}/${VARNAME}.h")
+        set(outfile  "${OpenAL_BINARY_DIR}/${VARNAME}.txt")
 
         add_custom_command(OUTPUT "${outfile}"
             COMMAND ${CMAKE_COMMAND} -D "INPUT_FILE=${infile}" -D "OUTPUT_FILE=${outfile}"
-                -D "VARIABLE_NAME=${VARNAME}" -P "${CMAKE_MODULE_PATH}/bin2h.script.cmake"
+                -P "${CMAKE_MODULE_PATH}/bin2h.script.cmake"
             WORKING_DIRECTORY "${OpenAL_SOURCE_DIR}"
             DEPENDS "${infile}" "${CMAKE_MODULE_PATH}/bin2h.script.cmake"
             VERBATIM
@@ -1240,7 +1238,7 @@ if(ALSOFT_EMBED_HRTF_DATA)
         set(ALC_OBJS  ${ALC_OBJS} "${outfile}")
     endmacro()
 
-    make_hrtf_header("Default HRTF.mhr" "hrtf_default")
+    make_hrtf_header("Default HRTF.mhr" "default_hrtf")
 endif()
 
 
@@ -1450,6 +1448,11 @@ if(WIN32 AND MINGW AND ALSOFT_BUILD_IMPORT_LIB AND NOT LIBTYPE STREQUAL "STATIC"
         add_custom_command(TARGET OpenAL POST_BUILD
             COMMAND "${SED_EXECUTABLE}" -i -e "s/ @[^ ]*//" OpenAL32.def
             COMMAND "${CMAKE_DLLTOOL}" -d OpenAL32.def -l OpenAL32.lib -D OpenAL32.dll
+            # Technically OpenAL32.def was created by the build, but cmake
+            # doesn't recognize it due to -Wl,--output-def,OpenAL32.def being
+            # manually specified. But declaring the file here allows it to be
+            # properly cleaned, e.g. during make clean.
+            BYPRODUCTS OpenAL32.def OpenAL32.lib
             COMMENT "Stripping ordinals from OpenAL32.def and generating OpenAL32.lib..."
             VERBATIM
         )
