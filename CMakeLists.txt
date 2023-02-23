@@ -170,8 +170,8 @@ if(NOT LIBTYPE)
 endif()
 
 set(LIB_MAJOR_VERSION "1")
-set(LIB_MINOR_VERSION "22")
-set(LIB_REVISION "2")
+set(LIB_MINOR_VERSION "23")
+set(LIB_REVISION "0")
 set(LIB_VERSION "${LIB_MAJOR_VERSION}.${LIB_MINOR_VERSION}.${LIB_REVISION}")
 set(LIB_VERSION_NUM ${LIB_MAJOR_VERSION},${LIB_MINOR_VERSION},${LIB_REVISION},0)
 
@@ -270,6 +270,11 @@ else()
     check_cxx_compiler_flag(-Wno-c++20-attribute-extensions HAVE_WNO_CXX20_ATTR_EXT)
     if(HAVE_WNO_CXX20_ATTR_EXT)
         set(C_FLAGS ${C_FLAGS} $<$<COMPILE_LANGUAGE:CXX>:-Wno-c++20-attribute-extensions>)
+    else()
+        check_cxx_compiler_flag(-Wno-c++20-extensions HAVE_WNO_CXX20_EXT)
+        if(HAVE_WNO_CXX20_EXT)
+            set(C_FLAGS ${C_FLAGS} $<$<COMPILE_LANGUAGE:CXX>:-Wno-c++20-extensions>)
+        endif()
     endif()
 
     if(ALSOFT_WERROR)
@@ -607,6 +612,7 @@ set(COMMON_OBJS
     common/alspan.h
     common/alstring.cpp
     common/alstring.h
+    common/altraits.h
     common/atomic.h
     common/comptr.h
     common/dynload.cpp
@@ -649,6 +655,9 @@ set(CORE_OBJS
     core/converter.h
     core/cpu_caps.cpp
     core/cpu_caps.h
+    core/cubic_defs.h
+    core/cubic_tables.cpp
+    core/cubic_tables.h
     core/devformat.cpp
     core/devformat.h
     core/device.cpp
@@ -1199,6 +1208,17 @@ set(BACKENDS  "${BACKENDS} Null")
 
 find_package(Git)
 if(ALSOFT_UPDATE_BUILD_VERSION AND GIT_FOUND AND EXISTS "${OpenAL_SOURCE_DIR}/.git")
+    set(GIT_DIR "${OpenAL_SOURCE_DIR}/.git")
+
+    # Check if this is a submodule, if it is then find the .git directory
+    if(NOT IS_DIRECTORY "${OpenAL_SOURCE_DIR}/.git")
+        file(READ ${GIT_DIR} submodule)
+        string(REGEX REPLACE "gitdir: (.*)$" "\\1" GIT_DIR_RELATIVE ${submodule})
+        string(STRIP ${GIT_DIR_RELATIVE} GIT_DIR_RELATIVE)
+        get_filename_component(SUBMODULE_DIR ${GIT_DIR} PATH)
+        get_filename_component(GIT_DIR ${SUBMODULE_DIR}/${GIT_DIR_RELATIVE} ABSOLUTE)
+    endif()
+
     # Get the current working branch and its latest abbreviated commit hash
     add_custom_command(OUTPUT "${OpenAL_BINARY_DIR}/version_witness.txt"
         BYPRODUCTS "${OpenAL_BINARY_DIR}/version.h"
@@ -1208,7 +1228,7 @@ if(ALSOFT_UPDATE_BUILD_VERSION AND GIT_FOUND AND EXISTS "${OpenAL_SOURCE_DIR}/.g
         COMMAND ${CMAKE_COMMAND} -E touch "${OpenAL_BINARY_DIR}/version_witness.txt"
         WORKING_DIRECTORY "${OpenAL_SOURCE_DIR}"
         MAIN_DEPENDENCY "${OpenAL_SOURCE_DIR}/version.h.in"
-        DEPENDS "${OpenAL_SOURCE_DIR}/.git/index" "${OpenAL_SOURCE_DIR}/version.cmake"
+        DEPENDS "${GIT_DIR}/index" "${OpenAL_SOURCE_DIR}/version.cmake"
         VERBATIM
     )
 

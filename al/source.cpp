@@ -334,8 +334,8 @@ double GetSourceOffset(ALsource *Source, ALenum name, ALCcontext *context)
     case AL_BYTE_OFFSET:
         if(BufferFmt->OriginalType == UserFmtIMA4)
         {
-            ALuint FrameBlockSize{BufferFmt->OriginalAlign};
-            ALuint align{(BufferFmt->OriginalAlign-1)/2 + 4};
+            ALuint FrameBlockSize{BufferFmt->mBlockAlign};
+            ALuint align{(BufferFmt->mBlockAlign-1)/2 + 4};
             ALuint BlockSize{align * BufferFmt->channelsFromFmt()};
 
             /* Round down to nearest ADPCM block */
@@ -343,7 +343,7 @@ double GetSourceOffset(ALsource *Source, ALenum name, ALCcontext *context)
         }
         else if(BufferFmt->OriginalType == UserFmtMSADPCM)
         {
-            ALuint FrameBlockSize{BufferFmt->OriginalAlign};
+            ALuint FrameBlockSize{BufferFmt->mBlockAlign};
             ALuint align{(FrameBlockSize-2)/2 + 7};
             ALuint BlockSize{align * BufferFmt->channelsFromFmt()};
 
@@ -390,8 +390,8 @@ double GetSourceLength(const ALsource *source, ALenum name)
     case AL_BYTE_LENGTH_SOFT:
         if(BufferFmt->OriginalType == UserFmtIMA4)
         {
-            ALuint FrameBlockSize{BufferFmt->OriginalAlign};
-            ALuint align{(BufferFmt->OriginalAlign-1)/2 + 4};
+            ALuint FrameBlockSize{BufferFmt->mBlockAlign};
+            ALuint align{(BufferFmt->mBlockAlign-1)/2 + 4};
             ALuint BlockSize{align * BufferFmt->channelsFromFmt()};
 
             /* Round down to nearest ADPCM block */
@@ -399,7 +399,7 @@ double GetSourceLength(const ALsource *source, ALenum name)
         }
         else if(BufferFmt->OriginalType == UserFmtMSADPCM)
         {
-            ALuint FrameBlockSize{BufferFmt->OriginalAlign};
+            ALuint FrameBlockSize{BufferFmt->mBlockAlign};
             ALuint align{(FrameBlockSize-2)/2 + 7};
             ALuint BlockSize{align * BufferFmt->channelsFromFmt()};
 
@@ -474,15 +474,15 @@ al::optional<VoicePos> GetSampleOffset(al::deque<ALbufferQueueItem> &BufferList,
         /* Determine the ByteOffset (and ensure it is block aligned) */
         if(BufferFmt->OriginalType == UserFmtIMA4)
         {
-            const ALuint align{(BufferFmt->OriginalAlign-1)/2 + 4};
+            const ALuint align{(BufferFmt->mBlockAlign-1)/2 + 4};
             Offset = std::floor(Offset / align / BufferFmt->channelsFromFmt());
-            Offset *= BufferFmt->OriginalAlign;
+            Offset *= BufferFmt->mBlockAlign;
         }
         else if(BufferFmt->OriginalType == UserFmtMSADPCM)
         {
-            const ALuint align{(BufferFmt->OriginalAlign-2)/2 + 7};
+            const ALuint align{(BufferFmt->mBlockAlign-2)/2 + 7};
             Offset = std::floor(Offset / align / BufferFmt->channelsFromFmt());
-            Offset *= BufferFmt->OriginalAlign;
+            Offset *= BufferFmt->mBlockAlign;
         }
         else
             Offset = std::floor(Offset / BufferFmt->channelsFromFmt());
@@ -530,14 +530,16 @@ void InitVoice(Voice *voice, ALsource *source, ALbufferQueueItem *BufferList, AL
         FmtSuperStereo : buffer->mChannels;
     voice->mFmtType = buffer->mType;
     voice->mFrameStep = buffer->channelsFromFmt();
-    voice->mFrameSize = buffer->frameSizeFromFmt();
+    voice->mBytesPerBlock = buffer->blockSizeFromFmt();
+    voice->mSamplesPerBlock = buffer->mBlockAlign;
     voice->mAmbiLayout = IsUHJ(voice->mFmtChannels) ? AmbiLayout::FuMa : buffer->mAmbiLayout;
     voice->mAmbiScaling = IsUHJ(voice->mFmtChannels) ? AmbiScaling::UHJ : buffer->mAmbiScaling;
     voice->mAmbiOrder = (voice->mFmtChannels == FmtSuperStereo) ? 1 : buffer->mAmbiOrder;
 
     if(buffer->mCallback) voice->mFlags.set(VoiceIsCallback);
     else if(source->SourceType == AL_STATIC) voice->mFlags.set(VoiceIsStatic);
-    voice->mNumCallbackSamples = 0;
+    voice->mNumCallbackBlocks = 0;
+    voice->mCallbackBlockBase = 0;
 
     voice->prepare(device);
 
@@ -647,7 +649,8 @@ bool SetVoiceOffset(Voice *oldvoice, const VoicePos &vpos, ALsource *source, ALC
     newvoice->mCurrentBuffer.store(vpos.bufferitem, std::memory_order_relaxed);
     newvoice->mStartTime = oldvoice->mStartTime;
     newvoice->mFlags.reset();
-    if(vpos.pos > 0 || vpos.frac > 0 || vpos.bufferitem != &source->mQueue.front())
+    if(vpos.pos > 0 || (vpos.pos == 0 && vpos.frac > 0)
+        || vpos.bufferitem != &source->mQueue.front())
         newvoice->mFlags.set(VoiceIsFading);
     InitVoice(newvoice, source, vpos.bufferitem, context, device);
     source->VoiceIdx = vidx;
@@ -1536,6 +1539,7 @@ try {
             newlist.emplace_back();
             newlist.back().mCallback = buffer->mCallback;
             newlist.back().mUserData = buffer->mUserData;
+            newlist.back().mBlockAlign = buffer->mBlockAlign;
             newlist.back().mSampleLen = buffer->mSampleLen;
             newlist.back().mLoopStart = buffer->mLoopStart;
             newlist.back().mLoopEnd = buffer->mLoopEnd;
@@ -2646,7 +2650,8 @@ void StartSources(ALCcontext *const context, const al::span<ALsource*> srchandle
                 voice->mPosition.store(vpos->pos, std::memory_order_relaxed);
                 voice->mPositionFrac.store(vpos->frac, std::memory_order_relaxed);
                 voice->mCurrentBuffer.store(vpos->bufferitem, std::memory_order_relaxed);
-                if(vpos->pos!=0 || vpos->frac!=0 || vpos->bufferitem!=&source->mQueue.front())
+                if(vpos->pos > 0 || (vpos->pos == 0 && vpos->frac > 0)
+                    || vpos->bufferitem != &source->mQueue.front())
                     voice->mFlags.set(VoiceIsFading);
             }
         }
@@ -2675,12 +2680,6 @@ START_API_FUNC
         context->setError(AL_INVALID_VALUE, "Generating %d sources", n);
     if(n <= 0) [[unlikely]] return;
 
-#ifdef ALSOFT_EAX
-    const bool has_eax{context->has_eax()};
-    std::unique_lock<std::mutex> proplock{};
-    if(has_eax)
-        proplock = std::unique_lock<std::mutex>{context->mPropLock};
-#endif
     std::unique_lock<std::mutex> srclock{context->mSourceLock};
     ALCdevice *device{context->mALDevice.get()};
     if(static_cast<ALuint>(n) > device->SourcesMax-context->mNumSources)
@@ -2701,18 +2700,11 @@ START_API_FUNC
         sources[0] = source->id;
 
 #ifdef ALSOFT_EAX
-        if(has_eax)
-            source->eax_initialize(context.get());
+        source->eax_initialize(context.get());
 #endif // ALSOFT_EAX
     }
     else
     {
-#ifdef ALSOFT_EAX
-        auto eax_sources = al::vector<ALsource*>{};
-        if(has_eax)
-            eax_sources.reserve(static_cast<ALuint>(n));
-#endif // ALSOFT_EAX
-
         al::vector<ALuint> ids;
         ids.reserve(static_cast<ALuint>(n));
         do {
@@ -2720,16 +2712,10 @@ START_API_FUNC
             ids.emplace_back(source->id);
 
 #ifdef ALSOFT_EAX
-            if(has_eax)
-                eax_sources.emplace_back(source);
+            source->eax_initialize(context.get());
 #endif // ALSOFT_EAX
         } while(--n);
         std::copy(ids.cbegin(), ids.cend(), sources);
-
-#ifdef ALSOFT_EAX
-        for(auto& eax_source : eax_sources)
-            eax_source->eax_initialize(context.get());
-#endif // ALSOFT_EAX
     }
 }
 END_API_FUNC
@@ -3623,6 +3609,7 @@ START_API_FUNC
             BufferList = &item;
         }
         if(!buffer) continue;
+        BufferList->mBlockAlign = buffer->mBlockAlign;
         BufferList->mSampleLen = buffer->mSampleLen;
         BufferList->mLoopEnd = buffer->mSampleLen;
         BufferList->mSamples = buffer->mData.data();
@@ -3851,10 +3838,8 @@ void ALsource::eax_initialize(ALCcontext *context) noexcept
 {
     assert(context != nullptr);
     eax_al_context_ = context;
-    eax_primary_fx_slot_id_ = eax_al_context_->eax_get_primary_fx_slot_index();
-    eax_version_ = eax_al_context_->eax_get_version();
+    eax_primary_fx_slot_id_ = context->eax_get_primary_fx_slot_index();
     eax_set_defaults();
-    eax_commit(EaxCommitType::forced);
 }
 
 void ALsource::eax_dispatch(const EaxCall& call)
@@ -5094,12 +5079,15 @@ void ALsource::eax_commit_filters()
     eax_update_room_filters();
 }
 
-void ALsource::eax_commit(EaxCommitType commit_type)
+void ALsource::eax_commit()
 {
+    if(!eax_version_)
+        return;
+
     const auto primary_fx_slot_id = eax_al_context_->eax_get_primary_fx_slot_index();
     const auto is_primary_fx_slot_id_changed = (eax_primary_fx_slot_id_ != primary_fx_slot_id);
 
-    if(commit_type != EaxCommitType::forced && !is_primary_fx_slot_id_changed && !eax_changed_)
+    if(!eax_changed_ && !is_primary_fx_slot_id_changed)
         return;
 
     eax_primary_fx_slot_id_ = primary_fx_slot_id;
