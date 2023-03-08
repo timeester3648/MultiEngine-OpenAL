@@ -41,7 +41,7 @@ project "OpenAL"
 	}
 
 	filter "toolset:msc"
-		disablewarnings { "5030", "4065", "4834", "4267" }
+		disablewarnings { "5030", "4065", "4834", "4267", "4067" }
 
  	filter "system:windows"
 		defines { "AL_ALEXT_PROTOTYPES", "AL_BUILD_LIBRARY", "RESTRICT=__restrict", "_CRT_SECURE_NO_WARNINGS" }
