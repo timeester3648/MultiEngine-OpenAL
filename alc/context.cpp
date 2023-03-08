@@ -62,6 +62,7 @@ constexpr ALchar alExtList[] =
     "AL_SOFT_bformat_ex "
     "AL_SOFTX_bformat_hoa "
     "AL_SOFT_block_alignment "
+    "AL_SOFT_buffer_length_query "
     "AL_SOFT_callback_buffer "
     "AL_SOFTX_convolution_reverb "
     "AL_SOFT_deferred_updates "
@@ -79,7 +80,8 @@ constexpr ALchar alExtList[] =
     "AL_SOFT_source_resampler "
     "AL_SOFT_source_spatialize "
     "AL_SOFTX_source_start_delay "
-    "AL_SOFT_UHJ";
+    "AL_SOFT_UHJ "
+    "AL_SOFT_UHJ_ex";
 
 } // namespace
 

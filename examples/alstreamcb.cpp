@@ -83,10 +83,10 @@ struct StreamPlayer {
     StreamPlayer()
     {
         alGenBuffers(1, &mBuffer);
-        if(ALenum err{alGetError()})
+        if(alGetError() != AL_NO_ERROR)
             throw std::runtime_error{"alGenBuffers failed"};
         alGenSources(1, &mSource);
-        if(ALenum err{alGetError()})
+        if(alGetError() != AL_NO_ERROR)
         {
             alDeleteBuffers(1, &mBuffer);
             throw std::runtime_error{"alGenSources failed"};
@@ -134,9 +134,12 @@ struct StreamPlayer {
         case SF_FORMAT_DOUBLE:
         case SF_FORMAT_VORBIS:
         case SF_FORMAT_OPUS:
-        case SF_FORMAT_MPEG_LAYER_I:
-        case SF_FORMAT_MPEG_LAYER_II:
-        case SF_FORMAT_MPEG_LAYER_III:
+        case SF_FORMAT_ALAC_20:
+        case SF_FORMAT_ALAC_24:
+        case SF_FORMAT_ALAC_32:
+        case 0x0080/*SF_FORMAT_MPEG_LAYER_I*/:
+        case 0x0081/*SF_FORMAT_MPEG_LAYER_II*/:
+        case 0x0082/*SF_FORMAT_MPEG_LAYER_III*/:
             if(alIsExtensionPresent("AL_EXT_FLOAT32"))
                 mSampleFormat = SampleType::Float;
             break;
@@ -157,9 +160,9 @@ struct StreamPlayer {
         int splblocksize{}, byteblocksize{};
         if(mSampleFormat == SampleType::IMA4 || mSampleFormat == SampleType::MSADPCM)
         {
-            SF_CHUNK_INFO inf{ "fmt ", 4, 0, NULL };
+            SF_CHUNK_INFO inf{ "fmt ", 4, 0, nullptr };
             SF_CHUNK_ITERATOR *iter = sf_get_chunk_iterator(mSndfile, &inf);
-            if(!iter || sf_get_chunk_size(iter, &inf) != SF_ERR_NO_ERROR)
+            if(!iter || sf_get_chunk_size(iter, &inf) != SF_ERR_NO_ERROR || inf.datalen < 14)
                 mSampleFormat = SampleType::Int16;
             else
             {

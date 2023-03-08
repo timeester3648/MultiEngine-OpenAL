@@ -64,11 +64,12 @@ void AL_APIENTRY alSourcePlayAtTimevSOFT(ALsizei n, const ALuint *sources, ALint
 #endif
 #endif
 
+
 /* Non-standard export. Not part of any extension. */
 AL_API const ALchar* AL_APIENTRY alsoft_get_version(void);
 
 
-/* Functions from abandoned extenions. Only here for binary compatibility. */
+/* Functions from abandoned extensions. Only here for binary compatibility. */
 AL_API void AL_APIENTRY alSourceQueueBufferLayersSOFT(ALuint src, ALsizei nb,
     const ALuint *buffers);
 

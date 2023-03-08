@@ -101,7 +101,7 @@ complex_fft(const al::span<std::complex<Real>> buffer, const al::type_identity_t
      */
     const size_t log2_size{static_cast<size_t>(al::countr_zero(fftsize))};
 
-    if(log2_size >= gBitReverses.size()) [[unlikely]]
+    if(log2_size >= gBitReverses.size()) UNLIKELY
     {
         for(size_t idx{1u};idx < fftsize-1;++idx)
         {
@@ -116,7 +116,7 @@ complex_fft(const al::span<std::complex<Real>> buffer, const al::type_identity_t
                 std::swap(buffer[idx], buffer[revidx]);
         }
     }
-    else for(auto &rev : gBitReverses[log2_size]) [[likely]]
+    else for(auto &rev : gBitReverses[log2_size])
         std::swap(buffer[rev.first], buffer[rev.second]);
 
     /* Iterative form of Danielson-Lanczos lemma */

@@ -391,6 +391,13 @@ AL_API void AL_APIENTRY alProcessUpdatesSOFT(void);
 /*#define AL_SEC_LENGTH_SOFT                       0x200B*/
 #endif
 
+#ifndef AL_SOFT_buffer_length_query
+#define AL_SOFT_buffer_length_query 1
+/*#define AL_BYTE_LENGTH_SOFT                      0x2009*/
+/*#define AL_SAMPLE_LENGTH_SOFT                    0x200A*/
+/*#define AL_SEC_LENGTH_SOFT                       0x200B*/
+#endif
+
 #ifndef ALC_SOFT_pause_device
 #define ALC_SOFT_pause_device 1
 typedef void (ALC_APIENTRY*LPALCDEVICEPAUSESOFT)(ALCdevice *device);
@@ -602,6 +609,18 @@ AL_API void AL_APIENTRY alGetBufferPtrvSOFT(ALuint buffer, ALenum param, ALvoid 
 #define AL_NORMAL_SOFT                           0x0000
 #define AL_SUPER_STEREO_SOFT                     0x0001
 #define AL_SUPER_STEREO_WIDTH_SOFT               0x19B1
+#endif
+
+#ifndef AL_SOFT_UHJ_ex
+#define AL_SOFT_UHJ_ex
+#define AL_FORMAT_UHJ2CHN_MULAW_SOFT             0x19B3
+#define AL_FORMAT_UHJ2CHN_ALAW_SOFT              0x19B4
+#define AL_FORMAT_UHJ2CHN_IMA4_SOFT              0x19B5
+#define AL_FORMAT_UHJ2CHN_MSADPCM_SOFT           0x19B6
+#define AL_FORMAT_UHJ3CHN_MULAW_SOFT             0x19B7
+#define AL_FORMAT_UHJ3CHN_ALAW_SOFT              0x19B8
+#define AL_FORMAT_UHJ4CHN_MULAW_SOFT             0x19B9
+#define AL_FORMAT_UHJ4CHN_ALAW_SOFT              0x19BA
 #endif
 
 #ifndef ALC_SOFT_output_mode

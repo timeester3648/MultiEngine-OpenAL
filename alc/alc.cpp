@@ -902,6 +902,15 @@ constexpr struct {
     DECL(AL_SUPER_STEREO_SOFT),
     DECL(AL_SUPER_STEREO_WIDTH_SOFT),
 
+    DECL(AL_FORMAT_UHJ2CHN_MULAW_SOFT),
+    DECL(AL_FORMAT_UHJ2CHN_ALAW_SOFT),
+    DECL(AL_FORMAT_UHJ2CHN_IMA4_SOFT),
+    DECL(AL_FORMAT_UHJ2CHN_MSADPCM_SOFT),
+    DECL(AL_FORMAT_UHJ3CHN_MULAW_SOFT),
+    DECL(AL_FORMAT_UHJ3CHN_ALAW_SOFT),
+    DECL(AL_FORMAT_UHJ4CHN_MULAW_SOFT),
+    DECL(AL_FORMAT_UHJ4CHN_ALAW_SOFT),
+
     DECL(AL_STOP_SOURCES_ON_DISCONNECT_SOFT),
 
 #ifdef ALSOFT_EAX
@@ -2463,7 +2472,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
 bool ResetDeviceParams(ALCdevice *device, const int *attrList)
 {
     /* If the device was disconnected, reset it since we're opened anew. */
-    if(!device->Connected.load(std::memory_order_relaxed)) [[unlikely]]
+    if(!device->Connected.load(std::memory_order_relaxed)) UNLIKELY
     {
         /* Make sure disconnection is finished before continuing on. */
         device->waitForMix();
@@ -2495,7 +2504,7 @@ bool ResetDeviceParams(ALCdevice *device, const int *attrList)
     }
 
     ALCenum err{UpdateDeviceParams(device, attrList)};
-    if(err == ALC_NO_ERROR) [[likely]] return ALC_TRUE;
+    if(err == ALC_NO_ERROR) LIKELY return ALC_TRUE;
 
     alcSetError(device, err);
     return ALC_FALSE;
@@ -2547,7 +2556,7 @@ ContextRef GetContextRef(void)
              */
         }
         context = ALCcontext::sGlobalContext.load(std::memory_order_acquire);
-        if(context) [[likely]] context->add_ref();
+        if(context) LIKELY context->add_ref();
         ALCcontext::sGlobalContextLock.store(false, std::memory_order_release);
     }
     return ContextRef{context};
