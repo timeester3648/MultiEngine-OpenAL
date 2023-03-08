@@ -23,12 +23,10 @@
 /* #undef HAVE_RTKIT */
 
 /* Define if we have SSE CPU extensions */
-#if MLE_ENABLE_INTRINSICS
-	#define HAVE_SSE			(MLE_LEVEL_SSE != 0)
-	#define HAVE_SSE2			(MLE_LEVEL_SSE2 != 0)
-	#define HAVE_SSE3			(MLE_LEVEL_SSE3 != 0)
-	#define HAVE_SSE4_1			(MLE_LEVEL_SSE41 != 0)
-#endif
+#define HAVE_SSE			(MLE_LEVEL_SSE != 0)
+#define HAVE_SSE2			(MLE_LEVEL_SSE2 != 0)
+#define HAVE_SSE3			(MLE_LEVEL_SSE3 != 0)
+#define HAVE_SSE4_1			(MLE_LEVEL_SSE41 != 0)
 
 /* Define if we have ARM Neon CPU extensions */
 /* #undef HAVE_NEON */
