@@ -24,10 +24,10 @@
 
 /* Define if we have SSE CPU extensions */
 #if MLE_ENABLE_INTRINSICS
-	#define HAVE_SSE
-	#define HAVE_SSE2
-	#define HAVE_SSE3
-	#define HAVE_SSE4_1
+	#define HAVE_SSE			(MLE_LEVEL_SSE != 0)
+	#define HAVE_SSE2			(MLE_LEVEL_SSE2 != 0)
+	#define HAVE_SSE3			(MLE_LEVEL_SSE3 != 0)
+	#define HAVE_SSE4_1			(MLE_LEVEL_SSE41 != 0)
 #endif
 
 /* Define if we have ARM Neon CPU extensions */
@@ -121,4 +121,6 @@
 
 /* Define if we have pthread_set_name_np() */
 /* #undef HAVE_PTHREAD_SET_NAME_NP */
+#else
+	#error Unsupported platform
 #endif
