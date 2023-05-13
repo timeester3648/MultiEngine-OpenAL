@@ -31,6 +31,7 @@
 #include <mutex>
 #include <new>
 #include <numeric>
+#include <vector>
 
 #include "AL/al.h"
 #include "AL/alc.h"
@@ -43,7 +44,6 @@
 #include "alnumeric.h"
 #include "core/except.h"
 #include "opthelpers.h"
-#include "vector.h"
 
 
 namespace {
@@ -380,7 +380,7 @@ void FreeFilter(ALCdevice *device, ALfilter *filter)
     const size_t lidx{id >> 6};
     const ALuint slidx{id & 0x3f};
 
-    al::destroy_at(filter);
+    std::destroy_at(filter);
 
     device->FilterList[lidx].FreeMask |= 1_u64 << slidx;
 }
@@ -430,7 +430,7 @@ START_API_FUNC
         /* Store the allocated buffer IDs in a separate local list, to avoid
          * modifying the user storage in case of failure.
          */
-        al::vector<ALuint> ids;
+        std::vector<ALuint> ids;
         ids.reserve(static_cast<ALuint>(n));
         do {
             ALfilter *filter{AllocFilter(device)};
@@ -709,11 +709,14 @@ END_API_FUNC
 
 FilterSubList::~FilterSubList()
 {
+    if(!Filters)
+        return;
+
     uint64_t usemask{~FreeMask};
     while(usemask)
     {
         const int idx{al::countr_zero(usemask)};
-        al::destroy_at(Filters+idx);
+        std::destroy_at(Filters+idx);
         usemask &= ~(1_u64 << idx);
     }
     FreeMask = ~usemask;

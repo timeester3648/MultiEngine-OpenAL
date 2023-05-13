@@ -2,10 +2,14 @@
 #define ALC_CONTEXT_H
 
 #include <atomic>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <stdint.h>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "AL/al.h"
 #include "AL/alc.h"
@@ -16,8 +20,8 @@
 #include "alnumeric.h"
 #include "atomic.h"
 #include "core/context.h"
+#include "inprogext.h"
 #include "intrusive_ptr.h"
-#include "vector.h"
 
 #ifdef ALSOFT_EAX
 #include "al/eax/call.h"
@@ -30,8 +34,37 @@
 struct ALeffect;
 struct ALeffectslot;
 struct ALsource;
+struct DebugGroup;
+
+enum class DebugSource : uint8_t;
+enum class DebugType : uint8_t;
+enum class DebugSeverity : uint8_t;
 
 using uint = unsigned int;
+
+
+enum ContextFlags {
+    DebugBit = 0, /* ALC_CONTEXT_DEBUG_BIT_EXT */
+};
+using ContextFlagBitset = std::bitset<sizeof(ALuint)*8>;
+
+
+struct DebugLogEntry {
+    const DebugSource mSource;
+    const DebugType mType;
+    const DebugSeverity mSeverity;
+    const uint mId;
+
+    std::string mMessage;
+
+    template<typename T>
+    DebugLogEntry(DebugSource source, DebugType type, uint id, DebugSeverity severity, T&& message)
+        : mSource{source}, mType{type}, mSeverity{severity}, mId{id}
+        , mMessage{std::forward<T>(message)}
+    { }
+    DebugLogEntry(const DebugLogEntry&) = default;
+    DebugLogEntry(DebugLogEntry&&) = default;
+};
 
 
 struct SourceSubList {
@@ -76,6 +109,9 @@ struct ALCcontext : public al::intrusive_ref<ALCcontext>, ContextBase {
 
     std::atomic<ALenum> mLastError{AL_NO_ERROR};
 
+    const ContextFlagBitset mContextFlags;
+    std::atomic<bool> mDebugEnabled{false};
+
     DistanceModel mDistanceModel{DistanceModel::Default};
     bool mSourceDistanceModel{false};
 
@@ -88,23 +124,30 @@ struct ALCcontext : public al::intrusive_ref<ALCcontext>, ContextBase {
     ALEVENTPROCSOFT mEventCb{};
     void *mEventParam{nullptr};
 
+    std::mutex mDebugCbLock;
+    ALDEBUGPROCEXT mDebugCb{};
+    void *mDebugParam{nullptr};
+    std::vector<DebugGroup> mDebugGroups;
+    std::deque<DebugLogEntry> mDebugLog;
+
     ALlistener mListener{};
 
-    al::vector<SourceSubList> mSourceList;
+    std::vector<SourceSubList> mSourceList;
     ALuint mNumSources{0};
     std::mutex mSourceLock;
 
-    al::vector<EffectSlotSubList> mEffectSlotList;
+    std::vector<EffectSlotSubList> mEffectSlotList;
     ALuint mNumEffectSlots{0u};
     std::mutex mEffectSlotLock;
 
     /* Default effect slot */
     std::unique_ptr<ALeffectslot> mDefaultSlot;
 
-    const char *mExtensionList{nullptr};
+    std::vector<std::string_view> mExtensions;
+    std::string mExtensionsString{};
 
 
-    ALCcontext(al::intrusive_ptr<ALCdevice> device);
+    ALCcontext(al::intrusive_ptr<ALCdevice> device, ContextFlagBitset flags);
     ALCcontext(const ALCcontext&) = delete;
     ALCcontext& operator=(const ALCcontext&) = delete;
     ~ALCcontext();
@@ -147,6 +190,18 @@ struct ALCcontext : public al::intrusive_ref<ALCcontext>, ContextBase {
 #endif
     void setError(ALenum errorCode, const char *msg, ...);
 
+    void sendDebugMessage(std::unique_lock<std::mutex> &debuglock, DebugSource source,
+        DebugType type, ALuint id, DebugSeverity severity, ALsizei length, const char *message);
+
+    void debugMessage(DebugSource source, DebugType type, ALuint id, DebugSeverity severity,
+        ALsizei length, const char *message)
+    {
+        if(!mDebugEnabled.load(std::memory_order_relaxed)) LIKELY
+            return;
+        std::unique_lock<std::mutex> debuglock{mDebugCbLock};
+        sendDebugMessage(debuglock, source, type, id, severity, length, message);
+    }
+
     /* Process-wide current context */
     static std::atomic<bool> sGlobalContextLock;
     static std::atomic<ALCcontext*> sGlobalContext;
@@ -185,11 +240,10 @@ public:
 
 #ifdef ALSOFT_EAX
 public:
-    bool has_eax() const noexcept { return eax_is_initialized_; }
-    bool eax_is_capable() const noexcept;
-    int eax_get_version() const noexcept { return eax_version_; }
+    bool hasEax() const noexcept { return mEaxIsInitialized; }
+    bool eaxIsCapable() const noexcept;
 
-    void eax_uninitialize() noexcept;
+    void eaxUninitialize() noexcept;
 
     ALenum eax_eax_set(
         const GUID* property_set_id,
@@ -205,19 +259,21 @@ public:
         ALvoid* property_value,
         ALuint property_value_size);
 
-    void eax_commit_and_update_sources();
-    void eax_set_last_error() noexcept;
+    void eaxSetLastError() noexcept;
 
-    EaxFxSlotIndex eax_get_primary_fx_slot_index() const noexcept
-    { return eax_primary_fx_slot_index_; }
+    EaxFxSlotIndex eaxGetPrimaryFxSlotIndex() const noexcept
+    { return mEaxPrimaryFxSlotIndex; }
 
-    const ALeffectslot& eax_get_fx_slot(EaxFxSlotIndexValue fx_slot_index) const
-    { return eax_fx_slots_.get(fx_slot_index); }
-    ALeffectslot& eax_get_fx_slot(EaxFxSlotIndexValue fx_slot_index)
-    { return eax_fx_slots_.get(fx_slot_index); }
+    const ALeffectslot& eaxGetFxSlot(EaxFxSlotIndexValue fx_slot_index) const
+    { return mEaxFxSlots.get(fx_slot_index); }
+    ALeffectslot& eaxGetFxSlot(EaxFxSlotIndexValue fx_slot_index)
+    { return mEaxFxSlots.get(fx_slot_index); }
 
-    void eax_commit_fx_slots()
-    { eax_fx_slots_.commit(); }
+    bool eaxNeedsCommit() const noexcept { return mEaxNeedsCommit; }
+    void eaxCommit();
+
+    void eaxCommitFxSlots()
+    { mEaxFxSlots.commit(); }
 
 private:
     static constexpr auto eax_primary_fx_slot_id_dirty_bit = EaxDirtyFlags{1} << 0;
@@ -382,24 +438,23 @@ private:
         }
     };
 
-    bool eax_is_initialized_{};
-    bool eax_is_tried_{};
+    bool mEaxIsInitialized{};
+    bool mEaxIsTried{};
 
-    long eax_last_error_{};
-    unsigned long eax_speaker_config_{};
+    long mEaxLastError{};
+    unsigned long mEaxSpeakerConfig{};
 
-    EaxFxSlotIndex eax_primary_fx_slot_index_{};
-    EaxFxSlots eax_fx_slots_{};
+    EaxFxSlotIndex mEaxPrimaryFxSlotIndex{};
+    EaxFxSlots mEaxFxSlots{};
 
-    int eax_version_{}; // Current EAX version.
-    EaxDirtyFlags eax_df_{}; // Dirty flags for the current EAX version.
-    Eax5State eax123_{}; // EAX1/EAX2/EAX3 state.
-    Eax4State eax4_{}; // EAX4 state.
-    Eax5State eax5_{}; // EAX5 state.
-    Eax5Props eax_{}; // Current EAX state.
-    EAXSESSIONPROPERTIES eax_session_{};
-
-    std::string eax_extension_list_{};
+    int mEaxVersion{}; // Current EAX version.
+    bool mEaxNeedsCommit{};
+    EaxDirtyFlags mEaxDf{}; // Dirty flags for the current EAX version.
+    Eax5State mEax123{}; // EAX1/EAX2/EAX3 state.
+    Eax4State mEax4{}; // EAX4 state.
+    Eax5State mEax5{}; // EAX5 state.
+    Eax5Props mEax{}; // Current EAX state.
+    EAXSESSIONPROPERTIES mEaxSession{};
 
     [[noreturn]] static void eax_fail(const char* message);
     [[noreturn]] static void eax_fail_unknown_property_set_id();
@@ -437,7 +492,7 @@ private:
         dst_d = src;
 
         if(dst_i != dst_d)
-            eax_df_ |= TDirtyBit;
+            mEaxDf |= TDirtyBit;
     }
 
     template<
@@ -448,12 +503,12 @@ private:
     void eax_context_commit_property(TState& state, EaxDirtyFlags& dst_df,
         TMemberResult TProps::*member) noexcept
     {
-        if((eax_df_ & TDirtyBit) != EaxDirtyFlags{})
+        if((mEaxDf & TDirtyBit) != EaxDirtyFlags{})
         {
             dst_df |= TDirtyBit;
             const auto& src_d = state.d.*member;
             state.i.*member = src_d;
-            eax_.*member = src_d;
+            mEax.*member = src_d;
         }
     }
 
@@ -475,13 +530,8 @@ private:
     static void eax4_context_set_defaults(Eax4State& state) noexcept;
     static void eax5_context_set_defaults(Eax5Props& props) noexcept;
     static void eax5_context_set_defaults(Eax5State& state) noexcept;
-    void eax4_context_set_current_defaults(const Eax4Props& props) noexcept;
-    void eax5_context_set_current_defaults(const Eax5Props& props) noexcept;
-    void eax_context_set_current_defaults();
     void eax_context_set_defaults();
     void eax_set_defaults();
-
-    void eax_initialize_sources();
 
     void eax_dispatch_fx_slot(const EaxCall& call);
     void eax_dispatch_source(const EaxCall& call);
@@ -511,7 +561,6 @@ private:
     void eax4_context_commit(Eax4State& state, EaxDirtyFlags& dst_df);
     void eax5_context_commit(Eax5State& state, EaxDirtyFlags& dst_df);
     void eax_context_commit();
-    void eax_commit();
 #endif // ALSOFT_EAX
 };
 

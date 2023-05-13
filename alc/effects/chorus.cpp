@@ -25,6 +25,7 @@
 #include <climits>
 #include <cstdlib>
 #include <iterator>
+#include <vector>
 
 #include "alc/effects/base.h"
 #include "almalloc.h"
@@ -41,7 +42,6 @@
 #include "core/resampler_limits.h"
 #include "intrusive_ptr.h"
 #include "opthelpers.h"
-#include "vector.h"
 
 
 namespace {
@@ -49,7 +49,7 @@ namespace {
 using uint = unsigned int;
 
 struct ChorusState final : public EffectState {
-    al::vector<float,16> mDelayBuffer;
+    std::vector<float> mDelayBuffer;
     uint mOffset{0};
 
     uint mLfoOffset{0};
@@ -78,7 +78,7 @@ struct ChorusState final : public EffectState {
     void calcTriangleDelays(const size_t todo);
     void calcSinusoidDelays(const size_t todo);
 
-    void deviceUpdate(const DeviceBase *device, const Buffer &buffer) override;
+    void deviceUpdate(const DeviceBase *device, const BufferStorage *buffer) override;
     void update(const ContextBase *context, const EffectSlot *slot, const EffectProps *props,
         const EffectTarget target) override;
     void process(const size_t samplesToDo, const al::span<const FloatBufferLine> samplesIn,
@@ -87,7 +87,7 @@ struct ChorusState final : public EffectState {
     DEF_NEWDEL(ChorusState)
 };
 
-void ChorusState::deviceUpdate(const DeviceBase *Device, const Buffer&)
+void ChorusState::deviceUpdate(const DeviceBase *Device, const BufferStorage*)
 {
     constexpr float max_delay{maxf(ChorusMaxDelay, FlangerMaxDelay)};
 

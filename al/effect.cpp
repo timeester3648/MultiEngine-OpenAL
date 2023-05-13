@@ -31,6 +31,7 @@
 #include <new>
 #include <numeric>
 #include <utility>
+#include <vector>
 
 #include "AL/al.h"
 #include "AL/alc.h"
@@ -49,7 +50,6 @@
 #include "core/except.h"
 #include "core/logging.h"
 #include "opthelpers.h"
-#include "vector.h"
 
 #ifdef ALSOFT_EAX
 #include <cassert>
@@ -210,7 +210,7 @@ void FreeEffect(ALCdevice *device, ALeffect *effect)
     const size_t lidx{id >> 6};
     const ALuint slidx{id & 0x3f};
 
-    al::destroy_at(effect);
+    std::destroy_at(effect);
 
     device->EffectList[lidx].FreeMask |= 1_u64 << slidx;
 }
@@ -259,7 +259,7 @@ START_API_FUNC
         /* Store the allocated buffer IDs in a separate local list, to avoid
          * modifying the user storage in case of failure.
          */
-        al::vector<ALuint> ids;
+        std::vector<ALuint> ids;
         ids.reserve(static_cast<ALuint>(n));
         do {
             ALeffect *effect{AllocEffect(device)};
@@ -548,11 +548,14 @@ void InitEffect(ALeffect *effect)
 
 EffectSubList::~EffectSubList()
 {
+    if(!Effects)
+        return;
+
     uint64_t usemask{~FreeMask};
     while(usemask)
     {
         const int idx{al::countr_zero(usemask)};
-        al::destroy_at(Effects+idx);
+        std::destroy_at(Effects+idx);
         usemask &= ~(1_u64 << idx);
     }
     FreeMask = ~usemask;

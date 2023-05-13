@@ -17,7 +17,6 @@
 #include <arm_neon.h>
 #endif
 
-#include "albyte.h"
 #include "alcomplex.h"
 #include "almalloc.h"
 #include "alnumbers.h"
@@ -72,7 +71,7 @@ namespace {
  */
 
 
-void LoadSamples(float *RESTRICT dst, const al::byte *src, const size_t srcstep, FmtType srctype,
+void LoadSamples(float *RESTRICT dst, const std::byte *src, const size_t srcstep, FmtType srctype,
     const size_t samples) noexcept
 {
 #define HANDLE_FMT(T)  case T: al::LoadSampleArray<T>(dst, src, srcstep, samples); break
@@ -217,7 +216,7 @@ struct ConvolutionState final : public EffectState {
     void (ConvolutionState::*mMix)(const al::span<FloatBufferLine>,const size_t)
     {&ConvolutionState::NormalMix};
 
-    void deviceUpdate(const DeviceBase *device, const Buffer &buffer) override;
+    void deviceUpdate(const DeviceBase *device, const BufferStorage *buffer) override;
     void update(const ContextBase *context, const EffectSlot *slot, const EffectProps *props,
         const EffectTarget target) override;
     void process(const size_t samplesToDo, const al::span<const FloatBufferLine> samplesIn,
@@ -246,7 +245,7 @@ void ConvolutionState::UpsampleMix(const al::span<FloatBufferLine> samplesOut,
 }
 
 
-void ConvolutionState::deviceUpdate(const DeviceBase *device, const Buffer &buffer)
+void ConvolutionState::deviceUpdate(const DeviceBase *device, const BufferStorage *buffer)
 {
     using UhjDecoderType = UhjDecoder<512>;
     static constexpr auto DecoderPadding = UhjDecoderType::sInputPadding;
@@ -266,16 +265,16 @@ void ConvolutionState::deviceUpdate(const DeviceBase *device, const Buffer &buff
     mComplexData = nullptr;
 
     /* An empty buffer doesn't need a convolution filter. */
-    if(!buffer.storage || buffer.storage->mSampleLen < 1) return;
+    if(!buffer || buffer->mSampleLen < 1) return;
 
-    mChannels = buffer.storage->mChannels;
-    mAmbiLayout = IsUHJ(mChannels) ? AmbiLayout::FuMa : buffer.storage->mAmbiLayout;
-    mAmbiScaling = IsUHJ(mChannels) ? AmbiScaling::UHJ : buffer.storage->mAmbiScaling;
-    mAmbiOrder = minu(buffer.storage->mAmbiOrder, MaxConvolveAmbiOrder);
+    mChannels = buffer->mChannels;
+    mAmbiLayout = IsUHJ(mChannels) ? AmbiLayout::FuMa : buffer->mAmbiLayout;
+    mAmbiScaling = IsUHJ(mChannels) ? AmbiScaling::UHJ : buffer->mAmbiScaling;
+    mAmbiOrder = minu(buffer->mAmbiOrder, MaxConvolveAmbiOrder);
 
     constexpr size_t m{ConvolveUpdateSize/2 + 1};
-    const auto bytesPerSample = BytesFromFmt(buffer.storage->mType);
-    const auto realChannels = buffer.storage->channelsFromFmt();
+    const auto bytesPerSample = BytesFromFmt(buffer->mType);
+    const auto realChannels = buffer->channelsFromFmt();
     const auto numChannels = (mChannels == FmtUHJ2) ? 3u : ChannelsFromFmt(mChannels, mAmbiOrder);
 
     mChans = ChannelDataArray::Create(numChannels);
@@ -286,11 +285,11 @@ void ConvolutionState::deviceUpdate(const DeviceBase *device, const Buffer &buff
      * called very infrequently, go ahead and use the polyphase resampler.
      */
     PPhaseResampler resampler;
-    if(device->Frequency != buffer.storage->mSampleRate)
-        resampler.init(buffer.storage->mSampleRate, device->Frequency);
+    if(device->Frequency != buffer->mSampleRate)
+        resampler.init(buffer->mSampleRate, device->Frequency);
     const auto resampledCount = static_cast<uint>(
-        (uint64_t{buffer.storage->mSampleLen}*device->Frequency+(buffer.storage->mSampleRate-1)) /
-        buffer.storage->mSampleRate);
+        (uint64_t{buffer->mSampleLen}*device->Frequency+(buffer->mSampleRate-1)) /
+        buffer->mSampleRate);
 
     const BandSplitter splitter{device->mXOverFreq / static_cast<float>(device->Frequency)};
     for(auto &e : *mChans)
@@ -312,12 +311,12 @@ void ConvolutionState::deviceUpdate(const DeviceBase *device, const Buffer &buff
     std::fill_n(mComplexData.get(), complex_length, complex_f{});
 
     /* Load the samples from the buffer. */
-    const size_t srclinelength{RoundUp(buffer.storage->mSampleLen+DecoderPadding, 16)};
+    const size_t srclinelength{RoundUp(buffer->mSampleLen+DecoderPadding, 16)};
     auto srcsamples = std::make_unique<float[]>(srclinelength * numChannels);
     std::fill_n(srcsamples.get(), srclinelength * numChannels, 0.0f);
     for(size_t c{0};c < numChannels && c < realChannels;++c)
-        LoadSamples(srcsamples.get() + srclinelength*c, buffer.samples.data() + bytesPerSample*c,
-            realChannels, buffer.storage->mType, buffer.storage->mSampleLen);
+        LoadSamples(srcsamples.get() + srclinelength*c, buffer->mData.data() + bytesPerSample*c,
+            realChannels, buffer->mType, buffer->mSampleLen);
 
     if(IsUHJ(mChannels))
     {
@@ -325,11 +324,10 @@ void ConvolutionState::deviceUpdate(const DeviceBase *device, const Buffer &buff
         std::array<float*,4> samples{};
         for(size_t c{0};c < numChannels;++c)
             samples[c] = srcsamples.get() + srclinelength*c;
-        decoder->decode({samples.data(), numChannels}, buffer.storage->mSampleLen,
-            buffer.storage->mSampleLen);
+        decoder->decode({samples.data(), numChannels}, buffer->mSampleLen, buffer->mSampleLen);
     }
 
-    auto ressamples = std::make_unique<double[]>(buffer.storage->mSampleLen +
+    auto ressamples = std::make_unique<double[]>(buffer->mSampleLen +
         (resampler ? resampledCount : 0));
     complex_f *filteriter = mComplexData.get() + mNumConvolveSegs*m;
     for(size_t c{0};c < numChannels;++c)
@@ -337,14 +335,13 @@ void ConvolutionState::deviceUpdate(const DeviceBase *device, const Buffer &buff
         /* Resample to match the device. */
         if(resampler)
         {
-            std::copy_n(srcsamples.get() + srclinelength*c, buffer.storage->mSampleLen,
+            std::copy_n(srcsamples.get() + srclinelength*c, buffer->mSampleLen,
                 ressamples.get() + resampledCount);
-            resampler.process(buffer.storage->mSampleLen, ressamples.get()+resampledCount,
+            resampler.process(buffer->mSampleLen, ressamples.get()+resampledCount,
                 resampledCount, ressamples.get());
         }
         else
-            std::copy_n(srcsamples.get() + srclinelength*c, buffer.storage->mSampleLen,
-                ressamples.get());
+            std::copy_n(srcsamples.get() + srclinelength*c, buffer->mSampleLen, ressamples.get());
 
         /* Store the first segment's samples in reverse in the time-domain, to
          * apply as a FIR filter.
@@ -363,7 +360,7 @@ void ConvolutionState::deviceUpdate(const DeviceBase *device, const Buffer &buff
             done += todo;
             std::fill(iter, fftbuffer.end(), std::complex<double>{});
 
-            forward_fft(al::as_span(fftbuffer));
+            forward_fft(al::span{fftbuffer});
             filteriter = std::copy_n(fftbuffer.cbegin(), m, filteriter);
         }
     }
@@ -565,7 +562,7 @@ void ConvolutionState::process(const size_t samplesToDo,
          */
         auto fftiter = std::copy_n(mInput.cbegin(), ConvolveUpdateSamples, mFftBuffer.begin());
         std::fill(fftiter, mFftBuffer.end(), complex_f{});
-        forward_fft(al::as_span(mFftBuffer));
+        forward_fft(al::span{mFftBuffer});
 
         std::copy_n(mFftBuffer.cbegin(), m, &mComplexData[curseg*m]);
 
@@ -601,7 +598,7 @@ void ConvolutionState::process(const size_t samplesToDo,
              * second-half samples (and this output's second half is
              * subsequently saved for next time).
              */
-            inverse_fft(al::as_span(mFftBuffer));
+            inverse_fft(al::span{mFftBuffer});
 
             /* The iFFT'd response is scaled up by the number of bins, so apply
              * the inverse to normalize the output.

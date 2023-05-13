@@ -125,13 +125,6 @@ inline ALbuffer *LookupBuffer(ALCdevice *device, ALuint id) noexcept
 }
 
 
-inline auto GetEffectBuffer(ALbuffer *buffer) noexcept -> EffectState::Buffer
-{
-    if(!buffer) return EffectState::Buffer{};
-    return EffectState::Buffer{buffer, buffer->mData};
-}
-
-
 void AddActiveEffectSlots(const al::span<ALeffectslot*> auxslots, ALCcontext *context)
 {
     if(auxslots.empty()) return;
@@ -172,7 +165,7 @@ void AddActiveEffectSlots(const al::span<ALeffectslot*> auxslots, ALCcontext *co
     curarray = context->mActiveAuxSlots.exchange(newarray, std::memory_order_acq_rel);
     context->mDevice->waitForMix();
 
-    al::destroy_n(curarray->end(), curarray->size());
+    std::destroy_n(curarray->end(), curarray->size());
     delete curarray;
 }
 
@@ -211,7 +204,7 @@ void RemoveActiveEffectSlots(const al::span<ALeffectslot*> auxslots, ALCcontext 
     curarray = context->mActiveAuxSlots.exchange(newarray, std::memory_order_acq_rel);
     context->mDevice->waitForMix();
 
-    al::destroy_n(curarray->end(), curarray->size());
+    std::destroy_n(curarray->end(), curarray->size());
     delete curarray;
 }
 
@@ -296,7 +289,7 @@ void FreeEffectSlot(ALCcontext *context, ALeffectslot *slot)
     const size_t lidx{id >> 6};
     const ALuint slidx{id & 0x3f};
 
-    al::destroy_at(slot);
+    std::destroy_at(slot);
 
     context->mEffectSlotList[lidx].FreeMask |= 1_u64 << slidx;
     context->mNumEffectSlots--;
@@ -348,7 +341,7 @@ START_API_FUNC
     }
     else
     {
-        al::vector<ALuint> ids;
+        std::vector<ALuint> ids;
         ALsizei count{n};
         ids.reserve(static_cast<ALuint>(count));
         do {
@@ -390,7 +383,7 @@ START_API_FUNC
     }
     else
     {
-        auto slots = al::vector<ALeffectslot*>(static_cast<ALuint>(n));
+        auto slots = std::vector<ALeffectslot*>(static_cast<ALuint>(n));
         for(size_t i{0};i < slots.size();++i)
         {
             ALeffectslot *slot{LookupEffectSlot(context.get(), effectslots[i])};
@@ -473,7 +466,7 @@ START_API_FUNC
         context->setError(AL_INVALID_VALUE, "Playing %d effect slots", n);
     if(n <= 0) UNLIKELY return;
 
-    auto slots = al::vector<ALeffectslot*>(static_cast<ALuint>(n));
+    auto slots = std::vector<ALeffectslot*>(static_cast<ALuint>(n));
     std::lock_guard<std::mutex> _{context->mEffectSlotLock};
     for(size_t i{0};i < slots.size();++i)
     {
@@ -527,7 +520,7 @@ START_API_FUNC
         context->setError(AL_INVALID_VALUE, "Stopping %d effect slots", n);
     if(n <= 0) UNLIKELY return;
 
-    auto slots = al::vector<ALeffectslot*>(static_cast<ALuint>(n));
+    auto slots = std::vector<ALeffectslot*>(static_cast<ALuint>(n));
     std::lock_guard<std::mutex> _{context->mEffectSlotLock};
     for(size_t i{0};i < slots.size();++i)
     {
@@ -673,7 +666,7 @@ START_API_FUNC
 
             FPUCtl mixer_mode{};
             auto *state = slot->Effect.State.get();
-            state->deviceUpdate(device, GetEffectBuffer(buffer));
+            state->deviceUpdate(device, buffer);
         }
         break;
 
@@ -952,7 +945,7 @@ ALenum ALeffectslot::initEffect(ALenum effectType, const EffectProps &effectProp
         state->mOutTarget = device->Dry.Buffer;
         {
             FPUCtl mixer_mode{};
-            state->deviceUpdate(device, GetEffectBuffer(Buffer));
+            state->deviceUpdate(device, Buffer);
         }
 
         Effect.Type = newtype;
@@ -1013,10 +1006,6 @@ void ALeffectslot::updateProps(ALCcontext *context)
 void UpdateAllEffectSlotProps(ALCcontext *context)
 {
     std::lock_guard<std::mutex> _{context->mEffectSlotLock};
-#ifdef ALSOFT_EAX
-    if(context->has_eax())
-        context->eax_commit_fx_slots();
-#endif
     for(auto &sublist : context->mEffectSlotList)
     {
         uint64_t usemask{~sublist.FreeMask};
@@ -1034,11 +1023,14 @@ void UpdateAllEffectSlotProps(ALCcontext *context)
 
 EffectSlotSubList::~EffectSlotSubList()
 {
+    if(!EffectSlots)
+        return;
+
     uint64_t usemask{~FreeMask};
     while(usemask)
     {
         const int idx{al::countr_zero(usemask)};
-        al::destroy_at(EffectSlots+idx);
+        std::destroy_at(EffectSlots+idx);
         usemask &= ~(1_u64 << idx);
     }
     FreeMask = ~usemask;
@@ -1052,53 +1044,45 @@ void ALeffectslot::eax_initialize(ALCcontext& al_context, EaxFxSlotIndexValue in
     if(index >= EAX_MAX_FXSLOTS)
         eax_fail("Index out of range.");
 
-    mPropsDirty = true;
     eax_al_context_ = &al_context;
     eax_fx_slot_index_ = index;
-    eax_version_ = eax_al_context_->eax_get_version();
     eax_fx_slot_set_defaults();
+
+    eax_effect_ = std::make_unique<EaxEffect>();
+    if(index == 0) eax_effect_->init<EaxReverbCommitter>();
+    else if(index == 1) eax_effect_->init<EaxChorusCommitter>();
+    else eax_effect_->init<EaxNullCommitter>();
 }
 
 void ALeffectslot::eax_commit()
 {
-    auto df = EaxDirtyFlags{};
-
-    switch(eax_version_)
+    if(eax_df_ != EaxDirtyFlags{})
     {
-    case 1:
-    case 2:
-    case 3:
-        eax5_fx_slot_commit(eax123_, df);
-        break;
-    case 4:
-        eax4_fx_slot_commit(df);
-        break;
-    case 5:
-        eax5_fx_slot_commit(eax5_, df);
-        break;
-    default:
-        eax_fail_unknown_version();
+        auto df = EaxDirtyFlags{};
+        switch(eax_version_)
+        {
+        case 1:
+        case 2:
+        case 3:
+            eax5_fx_slot_commit(eax123_, df);
+            break;
+        case 4:
+            eax4_fx_slot_commit(df);
+            break;
+        case 5:
+            eax5_fx_slot_commit(eax5_, df);
+            break;
+        }
+        eax_df_ = EaxDirtyFlags{};
+
+        if((df & eax_volume_dirty_bit) != EaxDirtyFlags{})
+            eax_fx_slot_set_volume();
+        if((df & eax_flags_dirty_bit) != EaxDirtyFlags{})
+            eax_fx_slot_set_flags();
     }
 
-    if(df == EaxDirtyFlags{}) {
-        if(eax_effect_ != nullptr && eax_effect_->commit())
-            eax_set_efx_slot_effect(*eax_effect_);
-
-        return;
-    }
-
-    if((df & eax_load_effect_dirty_bit) != EaxDirtyFlags{})
-        eax_fx_slot_load_effect();
-    else {
-        if(eax_effect_ != nullptr && eax_effect_->commit())
-            eax_set_efx_slot_effect(*eax_effect_);
-    }
-
-    if((df & eax_volume_dirty_bit) != EaxDirtyFlags{})
-        eax_fx_slot_set_volume();
-
-    if((df & eax_flags_dirty_bit) != EaxDirtyFlags{})
-        eax_fx_slot_set_flags();
+    if(eax_effect_->commit(eax_version_))
+        eax_set_efx_slot_effect(*eax_effect_);
 }
 
 [[noreturn]] void ALeffectslot::eax_fail(const char* message)
@@ -1192,46 +1176,13 @@ void ALeffectslot::eax5_fx_slot_set_defaults(Eax5Props& props) noexcept
     props.flOcclusionLFRatio = EAXFXSLOT_DEFAULTOCCLUSIONLFRATIO;
 }
 
-void ALeffectslot::eax4_fx_slot_set_current_defaults(const Eax4Props& props) noexcept
-{
-    static_cast<Eax4Props&>(eax_) = props;
-    eax_.lOcclusion = EAXFXSLOT_DEFAULTOCCLUSION;
-    eax_.flOcclusionLFRatio = EAXFXSLOT_DEFAULTOCCLUSIONLFRATIO;
-}
-
-void ALeffectslot::eax5_fx_slot_set_current_defaults(const Eax5Props& props) noexcept
-{
-    eax_ = props;
-}
-
-void ALeffectslot::eax_fx_slot_set_current_defaults()
-{
-    switch(eax_version_)
-    {
-    case 1:
-    case 2:
-    case 3:
-        eax5_fx_slot_set_current_defaults(eax123_.i);
-        break;
-    case 4:
-        eax4_fx_slot_set_current_defaults(eax4_.i);
-        break;
-    case 5:
-        eax5_fx_slot_set_current_defaults(eax5_.i);
-        break;
-    default:
-        eax_fail_unknown_version();
-    }
-
-    eax_df_ = ~EaxDirtyFlags{};
-}
-
 void ALeffectslot::eax_fx_slot_set_defaults()
 {
     eax5_fx_slot_set_defaults(eax123_.i);
     eax4_fx_slot_set_defaults(eax4_.i);
     eax5_fx_slot_set_defaults(eax5_.i);
-    eax_fx_slot_set_current_defaults();
+    eax_ = eax5_.i;
+    eax_df_ = EaxDirtyFlags{};
 }
 
 void ALeffectslot::eax4_fx_slot_get(const EaxCall& call, const Eax4Props& props) const
@@ -1306,7 +1257,7 @@ bool ALeffectslot::eax_get(const EaxCall& call)
         eax_fx_slot_get(call);
         break;
     case EaxCallPropertySetId::fx_slot_effect:
-        eax_dispatch_effect(call);
+        eax_effect_->get(call);
         break;
     default:
         eax_fail_unknown_property_id();
@@ -1315,21 +1266,16 @@ bool ALeffectslot::eax_get(const EaxCall& call)
     return false;
 }
 
-void ALeffectslot::eax_fx_slot_load_effect()
+void ALeffectslot::eax_fx_slot_load_effect(int version, ALenum altype)
 {
-    eax_effect_ = nullptr;
-    const auto efx_effect_type = eax_get_efx_effect_type(eax_.guidLoadEffect);
-
-    if(!IsValidEffectType(efx_effect_type))
-        eax_fail("Invalid effect type.");
-
-    eax_effect_ = eax_create_eax_effect(efx_effect_type, eax_version_);
-    eax_set_efx_slot_effect(*eax_effect_);
+    if(!IsValidEffectType(altype))
+        altype = AL_EFFECT_NULL;
+    eax_effect_->set_defaults(version, altype);
 }
 
 void ALeffectslot::eax_fx_slot_set_volume()
 {
-    const auto volume = clamp(eax_.lVolume, EAXFXSLOT_MINVOLUME, EAXFXSLOT_MAXVOLUME);
+    const auto volume = std::clamp(eax_.lVolume, EAXFXSLOT_MINVOLUME, EAXFXSLOT_MAXVOLUME);
     const auto gain = level_mb_to_gain(static_cast<float>(volume));
     eax_set_efx_slot_gain(gain);
 }
@@ -1395,10 +1341,14 @@ bool ALeffectslot::eax4_fx_slot_set(const EaxCall& call)
         break;
     case EAXFXSLOT_ALLPARAMETERS:
         eax4_fx_slot_set_all(call);
+        if((eax_df_ & eax_load_effect_dirty_bit))
+            eax_fx_slot_load_effect(4, eax_get_efx_effect_type(dst.guidLoadEffect));
         break;
     case EAXFXSLOT_LOADEFFECT:
         eax4_fx_slot_ensure_unlocked();
         eax_fx_slot_set_dirty<Eax4GuidLoadEffectValidator, eax_load_effect_dirty_bit>(call, dst.guidLoadEffect, eax_df_);
+        if((eax_df_ & eax_load_effect_dirty_bit))
+            eax_fx_slot_load_effect(4, eax_get_efx_effect_type(dst.guidLoadEffect));
         break;
     case EAXFXSLOT_VOLUME:
         eax_fx_slot_set<Eax4VolumeValidator, eax_volume_dirty_bit>(call, dst.lVolume, eax_df_);
@@ -1428,9 +1378,13 @@ bool ALeffectslot::eax5_fx_slot_set(const EaxCall& call)
         break;
     case EAXFXSLOT_ALLPARAMETERS:
         eax5_fx_slot_set_all(call);
+        if((eax_df_ & eax_load_effect_dirty_bit))
+            eax_fx_slot_load_effect(5, eax_get_efx_effect_type(dst.guidLoadEffect));
         break;
     case EAXFXSLOT_LOADEFFECT:
         eax_fx_slot_set_dirty<Eax4GuidLoadEffectValidator, eax_load_effect_dirty_bit>(call, dst.guidLoadEffect, eax_df_);
+        if((eax_df_ & eax_load_effect_dirty_bit))
+            eax_fx_slot_load_effect(5, eax_get_efx_effect_type(dst.guidLoadEffect));
         break;
     case EAXFXSLOT_VOLUME:
         eax_fx_slot_set<Eax4VolumeValidator, eax_volume_dirty_bit>(call, dst.lVolume, eax_df_);
@@ -1468,25 +1422,25 @@ bool ALeffectslot::eax_fx_slot_set(const EaxCall& call)
 // Returns `true` if all sources should be updated, or `false` otherwise.
 bool ALeffectslot::eax_set(const EaxCall& call)
 {
-    const auto version = call.get_version();
+    bool ret{false};
 
+    switch(call.get_property_set_id())
+    {
+    case EaxCallPropertySetId::fx_slot: ret = eax_fx_slot_set(call); break;
+    case EaxCallPropertySetId::fx_slot_effect: eax_effect_->set(call); break;
+    default: eax_fail_unknown_property_id();
+    }
+
+    const auto version = call.get_version();
     if(eax_version_ != version)
         eax_df_ = ~EaxDirtyFlags{};
     eax_version_ = version;
 
-    switch(call.get_property_set_id())
-    {
-    case EaxCallPropertySetId::fx_slot: return eax_fx_slot_set(call);
-    case EaxCallPropertySetId::fx_slot_effect: eax_dispatch_effect(call); return false;
-    default: eax_fail_unknown_property_id();
-    }
+    return ret;
 }
 
 void ALeffectslot::eax4_fx_slot_commit(EaxDirtyFlags& dst_df)
 {
-    if(eax_df_ == EaxDirtyFlags{})
-        return;
-
     eax_fx_slot_commit_property<eax_load_effect_dirty_bit>(eax4_, dst_df, &EAX40FXSLOTPROPERTIES::guidLoadEffect);
     eax_fx_slot_commit_property<eax_volume_dirty_bit>(eax4_, dst_df, &EAX40FXSLOTPROPERTIES::lVolume);
     eax_fx_slot_commit_property<eax_lock_dirty_bit>(eax4_, dst_df, &EAX40FXSLOTPROPERTIES::lLock);
@@ -1503,28 +1457,16 @@ void ALeffectslot::eax4_fx_slot_commit(EaxDirtyFlags& dst_df)
         dst_df |= eax_occlusion_lf_ratio_dirty_bit;
         dst_i.flOcclusionLFRatio = EAXFXSLOT_DEFAULTOCCLUSIONLFRATIO;
     }
-
-    eax_df_ = EaxDirtyFlags{};
 }
 
 void ALeffectslot::eax5_fx_slot_commit(Eax5State& state, EaxDirtyFlags& dst_df)
 {
-    if(eax_df_ == EaxDirtyFlags{})
-        return;
-
     eax_fx_slot_commit_property<eax_load_effect_dirty_bit>(state, dst_df, &EAX50FXSLOTPROPERTIES::guidLoadEffect);
     eax_fx_slot_commit_property<eax_volume_dirty_bit>(state, dst_df, &EAX50FXSLOTPROPERTIES::lVolume);
     eax_fx_slot_commit_property<eax_lock_dirty_bit>(state, dst_df, &EAX50FXSLOTPROPERTIES::lLock);
     eax_fx_slot_commit_property<eax_flags_dirty_bit>(state, dst_df, &EAX50FXSLOTPROPERTIES::ulFlags);
     eax_fx_slot_commit_property<eax_occlusion_dirty_bit>(state, dst_df, &EAX50FXSLOTPROPERTIES::lOcclusion);
     eax_fx_slot_commit_property<eax_occlusion_lf_ratio_dirty_bit>(state, dst_df, &EAX50FXSLOTPROPERTIES::flOcclusionLFRatio);
-    eax_df_ = EaxDirtyFlags{};
-}
-
-void ALeffectslot::eax_dispatch_effect(const EaxCall& call)
-{
-    if(eax_effect_ != nullptr)
-        eax_effect_->dispatch(call);
 }
 
 void ALeffectslot::eax_set_efx_slot_effect(EaxEffect &effect)

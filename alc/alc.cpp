@@ -38,6 +38,7 @@
 #include <climits>
 #include <cmath>
 #include <csignal>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -48,11 +49,13 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <stddef.h>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "AL/al.h"
 #include "AL/alc.h"
@@ -61,16 +64,15 @@
 
 #include "al/auxeffectslot.h"
 #include "al/buffer.h"
+#include "al/debug.h"
 #include "al/effect.h"
 #include "al/filter.h"
 #include "al/listener.h"
 #include "al/source.h"
 #include "albit.h"
-#include "albyte.h"
 #include "alconfig.h"
 #include "almalloc.h"
 #include "alnumeric.h"
-#include "aloptional.h"
 #include "alspan.h"
 #include "alstring.h"
 #include "alu.h"
@@ -101,7 +103,6 @@
 #include "opthelpers.h"
 #include "strutils.h"
 #include "threads.h"
-#include "vector.h"
 
 #include "backends/base.h"
 #include "backends/null.h"
@@ -179,7 +180,7 @@ BOOL APIENTRY DllMain(HINSTANCE module, DWORD reason, LPVOID /*reserved*/)
     case DLL_PROCESS_ATTACH:
         /* Pin the DLL so we won't get unloaded until the process terminates */
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-            reinterpret_cast<WCHAR*>(module), &module);
+            al::bit_cast<WCHAR*>(module), &module);
         break;
     }
     return TRUE;
@@ -455,6 +456,17 @@ const struct {
 
     DECL(alSourcePlayAtTimeSOFT),
     DECL(alSourcePlayAtTimevSOFT),
+
+    DECL(alBufferSubDataSOFT),
+
+    DECL(alBufferDataStatic),
+
+    DECL(alDebugMessageCallbackEXT),
+    DECL(alDebugMessageInsertEXT),
+    DECL(alDebugMessageControlEXT),
+    DECL(alPushDebugGroupEXT),
+    DECL(alPopDebugGroupEXT),
+    DECL(alGetDebugMessageLogEXT),
 #ifdef ALSOFT_EAX
 }, eaxFunctions[] = {
     DECL(EAXGet),
@@ -560,6 +572,9 @@ constexpr struct {
     DECL(ALC_INVALID_ENUM),
     DECL(ALC_INVALID_VALUE),
     DECL(ALC_OUT_OF_MEMORY),
+
+    DECL(ALC_CONTEXT_FLAGS_EXT),
+    DECL(ALC_CONTEXT_DEBUG_BIT_EXT),
 
 
     DECL(AL_INVALID),
@@ -911,6 +926,36 @@ constexpr struct {
     DECL(AL_FORMAT_UHJ4CHN_MULAW_SOFT),
     DECL(AL_FORMAT_UHJ4CHN_ALAW_SOFT),
 
+    DECL(AL_DONT_CARE_EXT),
+    DECL(AL_DEBUG_OUTPUT_EXT),
+    DECL(AL_DEBUG_CALLBACK_FUNCTION_EXT),
+    DECL(AL_DEBUG_CALLBACK_USER_PARAM_EXT),
+    DECL(AL_DEBUG_SOURCE_API_EXT),
+    DECL(AL_DEBUG_SOURCE_AUDIO_SYSTEM_EXT),
+    DECL(AL_DEBUG_SOURCE_THIRD_PARTY_EXT),
+    DECL(AL_DEBUG_SOURCE_APPLICATION_EXT),
+    DECL(AL_DEBUG_SOURCE_OTHER_EXT),
+    DECL(AL_DEBUG_TYPE_ERROR_EXT),
+    DECL(AL_DEBUG_TYPE_DEPRECATED_BEHAVIOR_EXT),
+    DECL(AL_DEBUG_TYPE_UNDEFINED_BEHAVIOR_EXT),
+    DECL(AL_DEBUG_TYPE_PORTABILITY_EXT),
+    DECL(AL_DEBUG_TYPE_PERFORMANCE_EXT),
+    DECL(AL_DEBUG_TYPE_MARKER_EXT),
+    DECL(AL_DEBUG_TYPE_PUSH_GROUP_EXT),
+    DECL(AL_DEBUG_TYPE_POP_GROUP_EXT),
+    DECL(AL_DEBUG_TYPE_OTHER_EXT),
+    DECL(AL_DEBUG_SEVERITY_HIGH_EXT),
+    DECL(AL_DEBUG_SEVERITY_MEDIUM_EXT),
+    DECL(AL_DEBUG_SEVERITY_LOW_EXT),
+    DECL(AL_DEBUG_SEVERITY_NOTIFICATION_EXT),
+    DECL(AL_DEBUG_LOGGED_MESSAGES_EXT),
+    DECL(AL_DEBUG_NEXT_LOGGED_MESSAGE_LENGTH_EXT),
+    DECL(AL_MAX_DEBUG_MESSAGE_LENGTH_EXT),
+    DECL(AL_MAX_DEBUG_LOGGED_MESSAGES_EXT),
+    DECL(AL_MAX_DEBUG_GROUP_STACK_DEPTH_EXT),
+    DECL(AL_STACK_OVERFLOW_EXT),
+    DECL(AL_STACK_UNDERFLOW_EXT),
+
     DECL(AL_STOP_SOURCES_ON_DISCONNECT_SOFT),
 
 #ifdef ALSOFT_EAX
@@ -979,6 +1024,7 @@ constexpr ALCchar alcExtensionList[] =
     "ALC_ENUMERATE_ALL_EXT "
     "ALC_ENUMERATION_EXT "
     "ALC_EXT_CAPTURE "
+    "ALC_EXTX_debug "
     "ALC_EXT_DEDICATED "
     "ALC_EXT_disconnect "
     "ALC_EXT_EFX "
@@ -1004,8 +1050,8 @@ using DeviceRef = al::intrusive_ptr<ALCdevice>;
 /************************************************
  * Device lists
  ************************************************/
-al::vector<ALCdevice*> DeviceList;
-al::vector<ALCcontext*> ContextList;
+std::vector<ALCdevice*> DeviceList;
+std::vector<ALCcontext*> ContextList;
 
 std::recursive_mutex ListLock;
 
@@ -1047,7 +1093,7 @@ void alc_initconfig(void)
         ALSOFT_GIT_BRANCH);
     {
         std::string names;
-        if(al::size(BackendList) < 1)
+        if(std::size(BackendList) < 1)
             names = "(none)";
         else
         {
@@ -1158,6 +1204,7 @@ void alc_initconfig(void)
             }
             return GetConfigValueBool(nullptr, "game_compat", optname, false);
         };
+        sBufferSubDataCompat = checkflag("__ALSOFT_ENABLE_SUB_DATA_EXT", "enable-sub-data-ext");
         compatflags.set(CompatFlags::ReverseX, checkflag("__ALSOFT_REVERSE_X", "reverse-x"));
         compatflags.set(CompatFlags::ReverseY, checkflag("__ALSOFT_REVERSE_Y", "reverse-y"));
         compatflags.set(CompatFlags::ReverseZ, checkflag("__ALSOFT_REVERSE_Z", "reverse-z"));
@@ -1166,13 +1213,7 @@ void alc_initconfig(void)
     }
     Voice::InitMixer(ConfigValueStr(nullptr, nullptr, "resampler"));
 
-    auto uhjfiltopt = ConfigValueStr(nullptr, "uhj", "decode-filter");
-    if(!uhjfiltopt)
-    {
-        if((uhjfiltopt = ConfigValueStr(nullptr, "uhj", "filter")))
-            WARN("uhj/filter is deprecated, please use uhj/decode-filter\n");
-    }
-    if(uhjfiltopt)
+    if(auto uhjfiltopt = ConfigValueStr(nullptr, "uhj", "decode-filter"))
     {
         if(al::strcasecmp(uhjfiltopt->c_str(), "fir256") == 0)
             UhjDecodeQuality = UhjQualityType::FIR256;
@@ -1183,7 +1224,7 @@ void alc_initconfig(void)
         else
             WARN("Unsupported uhj/decode-filter: %s\n", uhjfiltopt->c_str());
     }
-    if((uhjfiltopt = ConfigValueStr(nullptr, "uhj", "encode-filter")))
+    if(auto uhjfiltopt = ConfigValueStr(nullptr, "uhj", "encode-filter"))
     {
         if(al::strcasecmp(uhjfiltopt->c_str(), "fir256") == 0)
             UhjEncodeQuality = UhjQualityType::FIR256;
@@ -1402,7 +1443,7 @@ void ProbeCaptureDeviceList()
 
 
 struct DevFmtPair { DevFmtChannels chans; DevFmtType type; };
-al::optional<DevFmtPair> DecomposeDevFormat(ALenum format)
+std::optional<DevFmtPair> DecomposeDevFormat(ALenum format)
 {
     static const struct {
         ALenum format;
@@ -1437,13 +1478,13 @@ al::optional<DevFmtPair> DecomposeDevFormat(ALenum format)
     for(const auto &item : list)
     {
         if(item.format == format)
-            return al::make_optional<DevFmtPair>({item.channels, item.type});
+            return DevFmtPair{item.channels, item.type};
     }
 
-    return al::nullopt;
+    return std::nullopt;
 }
 
-al::optional<DevFmtType> DevFmtTypeFromEnum(ALCenum type)
+std::optional<DevFmtType> DevFmtTypeFromEnum(ALCenum type)
 {
     switch(type)
     {
@@ -1456,7 +1497,7 @@ al::optional<DevFmtType> DevFmtTypeFromEnum(ALCenum type)
     case ALC_FLOAT_SOFT: return DevFmtFloat;
     }
     WARN("Unsupported format type: 0x%04x\n", type);
-    return al::nullopt;
+    return std::nullopt;
 }
 ALCenum EnumFromDevFmt(DevFmtType type)
 {
@@ -1473,7 +1514,7 @@ ALCenum EnumFromDevFmt(DevFmtType type)
     throw std::runtime_error{"Invalid DevFmtType: "+std::to_string(int(type))};
 }
 
-al::optional<DevFmtChannels> DevFmtChannelsFromEnum(ALCenum channels)
+std::optional<DevFmtChannels> DevFmtChannelsFromEnum(ALCenum channels)
 {
     switch(channels)
     {
@@ -1486,7 +1527,7 @@ al::optional<DevFmtChannels> DevFmtChannelsFromEnum(ALCenum channels)
     case ALC_BFORMAT3D_SOFT: return DevFmtAmbi3D;
     }
     WARN("Unsupported format channels: 0x%04x\n", channels);
-    return al::nullopt;
+    return std::nullopt;
 }
 ALCenum EnumFromDevFmt(DevFmtChannels channels)
 {
@@ -1506,7 +1547,7 @@ ALCenum EnumFromDevFmt(DevFmtChannels channels)
     throw std::runtime_error{"Invalid DevFmtChannels: "+std::to_string(int(channels))};
 }
 
-al::optional<DevAmbiLayout> DevAmbiLayoutFromEnum(ALCenum layout)
+std::optional<DevAmbiLayout> DevAmbiLayoutFromEnum(ALCenum layout)
 {
     switch(layout)
     {
@@ -1514,7 +1555,7 @@ al::optional<DevAmbiLayout> DevAmbiLayoutFromEnum(ALCenum layout)
     case ALC_ACN_SOFT: return DevAmbiLayout::ACN;
     }
     WARN("Unsupported ambisonic layout: 0x%04x\n", layout);
-    return al::nullopt;
+    return std::nullopt;
 }
 ALCenum EnumFromDevAmbi(DevAmbiLayout layout)
 {
@@ -1526,7 +1567,7 @@ ALCenum EnumFromDevAmbi(DevAmbiLayout layout)
     throw std::runtime_error{"Invalid DevAmbiLayout: "+std::to_string(int(layout))};
 }
 
-al::optional<DevAmbiScaling> DevAmbiScalingFromEnum(ALCenum scaling)
+std::optional<DevAmbiScaling> DevAmbiScalingFromEnum(ALCenum scaling)
 {
     switch(scaling)
     {
@@ -1535,7 +1576,7 @@ al::optional<DevAmbiScaling> DevAmbiScalingFromEnum(ALCenum scaling)
     case ALC_N3D_SOFT: return DevAmbiScaling::N3D;
     }
     WARN("Unsupported ambisonic scaling: 0x%04x\n", scaling);
-    return al::nullopt;
+    return std::nullopt;
 }
 ALCenum EnumFromDevAmbi(DevAmbiScaling scaling)
 {
@@ -1690,13 +1731,13 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
     uint numMono{device->NumMonoSources};
     uint numStereo{device->NumStereoSources};
     uint numSends{device->NumAuxSends};
-    al::optional<StereoEncoding> stereomode;
-    al::optional<bool> optlimit;
-    al::optional<uint> optsrate;
-    al::optional<DevFmtChannels> optchans;
-    al::optional<DevFmtType> opttype;
-    al::optional<DevAmbiLayout> optlayout;
-    al::optional<DevAmbiScaling> optscale;
+    std::optional<StereoEncoding> stereomode;
+    std::optional<bool> optlimit;
+    std::optional<uint> optsrate;
+    std::optional<DevFmtChannels> optchans;
+    std::optional<DevFmtType> opttype;
+    std::optional<DevAmbiLayout> optlayout;
+    std::optional<DevAmbiScaling> optscale;
     uint period_size{DEFAULT_UPDATE_SIZE};
     uint buffer_size{DEFAULT_UPDATE_SIZE * DEFAULT_NUM_UPDATES};
     int hrtf_id{-1};
@@ -1839,7 +1880,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
     if(attrList && attrList[0])
     {
         ALenum outmode{ALC_ANY_SOFT};
-        al::optional<bool> opthrtf;
+        std::optional<bool> opthrtf;
         int freqAttr{};
 
 #define ATTRIBUTE(a) a: TRACE("%s = %d\n", #a, attrList[attrIdx + 1]);
@@ -1899,7 +1940,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
                 else if(attrList[attrIdx + 1] == ALC_TRUE)
                     opthrtf = true;
                 else if(attrList[attrIdx + 1] == ALC_DONT_CARE_SOFT)
-                    opthrtf = al::nullopt;
+                    opthrtf = std::nullopt;
                 break;
 
             case ATTRIBUTE(ALC_HRTF_ID_SOFT)
@@ -1912,7 +1953,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
                 else if(attrList[attrIdx + 1] == ALC_TRUE)
                     optlimit = true;
                 else if(attrList[attrIdx + 1] == ALC_DONT_CARE_SOFT)
-                    optlimit = al::nullopt;
+                    optlimit = std::nullopt;
                 break;
 
             case ATTRIBUTE(ALC_OUTPUT_MODE_SOFT)
@@ -2313,11 +2354,6 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
     {
         auto *context = static_cast<ALCcontext*>(ctxbase);
 
-        auto GetEffectBuffer = [](ALbuffer *buffer) noexcept -> EffectState::Buffer
-        {
-            if(!buffer) return EffectState::Buffer{};
-            return EffectState::Buffer{buffer, buffer->mData};
-        };
         std::unique_lock<std::mutex> proplock{context->mPropLock};
         std::unique_lock<std::mutex> slotlock{context->mEffectSlotLock};
 
@@ -2354,7 +2390,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
 
             EffectState *state{slot->Effect.State.get()};
             state->mOutTarget = device->Dry.Buffer;
-            state->deviceUpdate(device, GetEffectBuffer(slot->Buffer));
+            state->deviceUpdate(device, slot->Buffer);
             slot->updateProps(context);
         }
 
@@ -2373,7 +2409,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
 
                 EffectState *state{slot->Effect.State.get()};
                 state->mOutTarget = device->Dry.Buffer;
-                state->deviceUpdate(device, GetEffectBuffer(slot->Buffer));
+                state->deviceUpdate(device, slot->Buffer);
                 slot->updateProps(context);
             }
         }
@@ -2580,13 +2616,21 @@ END_API_FUNC
 ALC_API void ALC_APIENTRY alcSuspendContext(ALCcontext *context)
 START_API_FUNC
 {
-    if(!SuspendDefers)
-        return;
-
     ContextRef ctx{VerifyContext(context)};
     if(!ctx)
+    {
         alcSetError(nullptr, ALC_INVALID_CONTEXT);
-    else
+        return;
+    }
+
+    if(context->mContextFlags.test(ContextFlags::DebugBit)) UNLIKELY
+        ctx->debugMessage(DebugSource::API, DebugType::Portability, 0, DebugSeverity::Medium, -1,
+            "alcSuspendContext behavior is not portable -- some implementations suspend all "
+            "rendering, some only defer property changes, and some are completely no-op; consider "
+            "using alcDevicePauseSOFT to suspend all rendering, or alDeferUpdatesSOFT to only "
+            "defer property changes");
+
+    if(SuspendDefers)
     {
         std::lock_guard<std::mutex> _{ctx->mPropLock};
         ctx->deferUpdates();
@@ -2597,13 +2641,21 @@ END_API_FUNC
 ALC_API void ALC_APIENTRY alcProcessContext(ALCcontext *context)
 START_API_FUNC
 {
-    if(!SuspendDefers)
-        return;
-
     ContextRef ctx{VerifyContext(context)};
     if(!ctx)
+    {
         alcSetError(nullptr, ALC_INVALID_CONTEXT);
-    else
+        return;
+    }
+
+    if(context->mContextFlags.test(ContextFlags::DebugBit)) UNLIKELY
+        ctx->debugMessage(DebugSource::API, DebugType::Portability, 0, DebugSeverity::Medium, -1,
+            "alcProcessContext behavior is not portable -- some implementations resume rendering, "
+            "some apply deferred property changes, and some are completely no-op; consider using "
+            "alcDeviceResumeSOFT to resume rendering, or alProcessUpdatesSOFT to apply deferred "
+            "property changes");
+
+    if(SuspendDefers)
     {
         std::lock_guard<std::mutex> _{ctx->mPropLock};
         ctx->processUpdates();
@@ -3078,7 +3130,7 @@ START_API_FUNC
     }
     if(!dev || dev->Type == DeviceType::Capture)
     {
-        auto ivals = al::vector<int>(static_cast<uint>(size));
+        auto ivals = std::vector<int>(static_cast<uint>(size));
         if(size_t got{GetIntegerv(dev.get(), pname, ivals)})
             std::copy_n(ivals.begin(), got, values);
         return;
@@ -3197,7 +3249,7 @@ START_API_FUNC
         break;
 
     default:
-        auto ivals = al::vector<int>(static_cast<uint>(size));
+        auto ivals = std::vector<int>(static_cast<uint>(size));
         if(size_t got{GetIntegerv(dev.get(), pname, ivals)})
             std::copy_n(ivals.begin(), got, values);
         break;
@@ -3320,7 +3372,20 @@ START_API_FUNC
         return nullptr;
     }
 
-    ContextRef context{new ALCcontext{dev}};
+    ContextFlagBitset ctxflags{0};
+    if(attrList)
+    {
+        for(size_t i{0};attrList[i];i+=2)
+        {
+            if(attrList[i] == ALC_CONTEXT_FLAGS_EXT)
+            {
+                ctxflags = static_cast<ALuint>(attrList[i+1]);
+                break;
+            }
+        }
+    }
+
+    ContextRef context{new ALCcontext{dev, ctxflags}};
     context->init();
 
     if(auto volopt = dev->configValue<float>(nullptr, "volume-adjust"))
@@ -3611,7 +3676,7 @@ START_API_FUNC
     DeviceList.erase(iter);
 
     std::unique_lock<std::mutex> statelock{dev->StateLock};
-    al::vector<ContextRef> orphanctxs;
+    std::vector<ContextRef> orphanctxs;
     for(ContextBase *ctx : *dev->mContexts.load())
     {
         auto ctxiter = std::lower_bound(ContextList.begin(), ContextList.end(), ctx);
@@ -3818,7 +3883,7 @@ START_API_FUNC
         return;
     }
 
-    backend->captureSamples(static_cast<al::byte*>(buffer), usamples);
+    backend->captureSamples(static_cast<std::byte*>(buffer), usamples);
 }
 END_API_FUNC
 
