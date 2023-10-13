@@ -22,8 +22,8 @@
 
 #include "sndio.h"
 
+#include <cinttypes>
 #include <functional>
-#include <inttypes.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,11 +32,11 @@
 #include <vector>
 
 #include "alnumeric.h"
+#include "althrd_setname.h"
 #include "core/device.h"
 #include "core/helpers.h"
 #include "core/logging.h"
 #include "ringbuffer.h"
-#include "threads.h"
 
 #include <sndio.h>
 
@@ -57,7 +57,7 @@ struct SndioPlayback final : public BackendBase {
 
     int mixerProc();
 
-    void open(const char *name) override;
+    void open(std::string_view name) override;
     bool reset() override;
     void start() override;
     void stop() override;
@@ -112,13 +112,13 @@ int SndioPlayback::mixerProc()
 }
 
 
-void SndioPlayback::open(const char *name)
+void SndioPlayback::open(std::string_view name)
 {
-    if(!name)
+    if(name.empty())
         name = sndio_device;
-    else if(strcmp(name, sndio_device) != 0)
-        throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%s\" not found",
-            name};
+    else if(name != sndio_device)
+        throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
+            static_cast<int>(name.length()), name.data()};
 
     sio_hdl *sndHandle{sio_open(nullptr, SIO_PLAY, 0)};
     if(!sndHandle)
@@ -280,7 +280,7 @@ struct SndioCapture final : public BackendBase {
 
     int recordProc();
 
-    void open(const char *name) override;
+    void open(std::string_view name) override;
     void start() override;
     void stop() override;
     void captureSamples(std::byte *buffer, uint samples) override;
@@ -382,13 +382,13 @@ int SndioCapture::recordProc()
 }
 
 
-void SndioCapture::open(const char *name)
+void SndioCapture::open(std::string_view name)
 {
-    if(!name)
+    if(name.empty())
         name = sndio_device;
-    else if(strcmp(name, sndio_device) != 0)
-        throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%s\" not found",
-            name};
+    else if(name != sndio_device)
+        throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
+            static_cast<int>(name.length()), name.data()};
 
     mSndHandle = sio_open(nullptr, SIO_REC, true);
     if(mSndHandle == nullptr)
@@ -436,7 +436,7 @@ void SndioCapture::open(const char *name)
 
     if(!sio_setpar(mSndHandle, &par) || !sio_getpar(mSndHandle, &par))
         throw al::backend_exception{al::backend_error::DeviceError,
-            "Failed to set device praameters"};
+            "Failed to set device parameters"};
 
     if(par.bps > 1 && par.le != SIO_LE_NATIVE)
         throw al::backend_exception{al::backend_error::DeviceError,

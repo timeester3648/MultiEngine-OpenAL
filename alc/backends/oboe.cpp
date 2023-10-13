@@ -5,7 +5,6 @@
 
 #include <cassert>
 #include <cstring>
-#include <mutex>
 #include <stdint.h>
 
 #include "alnumeric.h"
@@ -29,7 +28,9 @@ struct OboePlayback final : public BackendBase, public oboe::AudioStreamCallback
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *oboeStream, void *audioData,
         int32_t numFrames) override;
 
-    void open(const char *name) override;
+    void onErrorAfterClose(oboe::AudioStream* /* audioStream */, oboe::Result /* error */) override;
+
+    void open(std::string_view name) override;
     bool reset() override;
     void start() override;
     void stop() override;
@@ -47,14 +48,21 @@ oboe::DataCallbackResult OboePlayback::onAudioReady(oboe::AudioStream *oboeStrea
     return oboe::DataCallbackResult::Continue;
 }
 
-
-void OboePlayback::open(const char *name)
+void OboePlayback::onErrorAfterClose(oboe::AudioStream* audioStream, oboe::Result error)
 {
-    if(!name)
+    if (error == oboe::Result::ErrorDisconnected) {
+        mDevice->handleDisconnect("Oboe AudioStream was disconnected: %s", oboe::convertToText(error));
+    }
+    TRACE("Error was %s", oboe::convertToText(error));
+}
+
+void OboePlayback::open(std::string_view name)
+{
+    if(name.empty())
         name = device_name;
-    else if(std::strcmp(name, device_name) != 0)
-        throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%s\" not found",
-            name};
+    else if(name != device_name)
+        throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
+            static_cast<int>(name.length()), name.data()};
 
     /* Open a basic output stream, just to ensure it can work. */
     oboe::ManagedStream stream;
@@ -198,8 +206,7 @@ void OboePlayback::stop()
 {
     oboe::Result result{mStream->stop()};
     if(result != oboe::Result::OK)
-        throw al::backend_exception{al::backend_error::DeviceError, "Failed to stop stream: %s",
-            oboe::convertToText(result)};
+        ERR("Failed to stop stream: %s\n", oboe::convertToText(result));
 }
 
 
@@ -213,7 +220,7 @@ struct OboeCapture final : public BackendBase, public oboe::AudioStreamCallback 
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream *oboeStream, void *audioData,
         int32_t numFrames) override;
 
-    void open(const char *name) override;
+    void open(std::string_view name) override;
     void start() override;
     void stop() override;
     void captureSamples(std::byte *buffer, uint samples) override;
@@ -228,13 +235,13 @@ oboe::DataCallbackResult OboeCapture::onAudioReady(oboe::AudioStream*, void *aud
 }
 
 
-void OboeCapture::open(const char *name)
+void OboeCapture::open(std::string_view name)
 {
-    if(!name)
+    if(name.empty())
         name = device_name;
-    else if(std::strcmp(name, device_name) != 0)
-        throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%s\" not found",
-            name};
+    else if(name != device_name)
+        throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
+            static_cast<int>(name.length()), name.data()};
 
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Input)
@@ -316,8 +323,7 @@ void OboeCapture::stop()
 {
     const oboe::Result result{mStream->stop()};
     if(result != oboe::Result::OK)
-        throw al::backend_exception{al::backend_error::DeviceError, "Failed to stop stream: %s",
-            oboe::convertToText(result)};
+        ERR("Failed to stop stream: %s\n", oboe::convertToText(result));
 }
 
 uint OboeCapture::availableSamples()

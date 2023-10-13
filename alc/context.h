@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -146,6 +147,8 @@ struct ALCcontext : public al::intrusive_ref<ALCcontext>, ContextBase {
     std::vector<std::string_view> mExtensions;
     std::string mExtensionsString{};
 
+    std::unordered_map<ALuint,std::string> mSourceNames;
+    std::unordered_map<ALuint,std::string> mEffectSlotNames;
 
     ALCcontext(al::intrusive_ptr<ALCdevice> device, ContextFlagBitset flags);
     ALCcontext(const ALCcontext&) = delete;
@@ -191,15 +194,15 @@ struct ALCcontext : public al::intrusive_ref<ALCcontext>, ContextBase {
     void setError(ALenum errorCode, const char *msg, ...);
 
     void sendDebugMessage(std::unique_lock<std::mutex> &debuglock, DebugSource source,
-        DebugType type, ALuint id, DebugSeverity severity, ALsizei length, const char *message);
+        DebugType type, ALuint id, DebugSeverity severity, std::string_view message);
 
     void debugMessage(DebugSource source, DebugType type, ALuint id, DebugSeverity severity,
-        ALsizei length, const char *message)
+        std::string_view message)
     {
         if(!mDebugEnabled.load(std::memory_order_relaxed)) LIKELY
             return;
         std::unique_lock<std::mutex> debuglock{mDebugCbLock};
-        sendDebugMessage(debuglock, source, type, id, severity, length, message);
+        sendDebugMessage(debuglock, source, type, id, severity, message);
     }
 
     /* Process-wide current context */
@@ -208,7 +211,7 @@ struct ALCcontext : public al::intrusive_ref<ALCcontext>, ContextBase {
 
 private:
     /* Thread-local current context. */
-    static thread_local ALCcontext *sLocalContext;
+    static inline thread_local ALCcontext *sLocalContext{};
 
     /* Thread-local context handling. This handles attempting to release the
      * context which may have been left current when the thread is destroyed.
@@ -221,17 +224,8 @@ private:
     static thread_local ThreadCtx sThreadContext;
 
 public:
-    /* HACK: MinGW generates bad code when accessing an extern thread_local
-     * object. Add a wrapper function for it that only accesses it where it's
-     * defined.
-     */
-#ifdef __MINGW32__
-    static ALCcontext *getThreadContext() noexcept;
-    static void setThreadContext(ALCcontext *context) noexcept;
-#else
     static ALCcontext *getThreadContext() noexcept { return sLocalContext; }
     static void setThreadContext(ALCcontext *context) noexcept { sThreadContext.set(context); }
-#endif
 
     /* Default effect that applies to sources that don't have an effect on send 0. */
     static ALeffect sDefaultEffect;

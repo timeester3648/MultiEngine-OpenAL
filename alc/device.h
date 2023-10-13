@@ -7,6 +7,7 @@
 #include <optional>
 #include <stdint.h>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -133,6 +134,10 @@ struct ALCdevice : public al::intrusive_ref<ALCdevice>, DeviceBase {
 #endif // ALSOFT_EAX
 
 
+    std::unordered_map<ALuint,std::string> mBufferNames;
+    std::unordered_map<ALuint,std::string> mEffectNames;
+    std::unordered_map<ALuint,std::string> mFilterNames;
+
     ALCdevice(DeviceType type);
     ~ALCdevice();
 
@@ -162,5 +167,8 @@ inline std::optional<float> ALCdevice::configValue(const char *block, const char
 template<>
 inline std::optional<bool> ALCdevice::configValue(const char *block, const char *key)
 { return ConfigValueBool(DeviceName.c_str(), block, key); }
+
+/** Stores the latest ALC device error. */
+void alcSetError(ALCdevice *device, ALCenum errorCode);
 
 #endif

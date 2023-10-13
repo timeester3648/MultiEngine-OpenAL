@@ -45,6 +45,13 @@
 #include "strutils.h"
 #include "vector.h"
 
+#if defined(ALSOFT_UWP)
+#include <winrt/Windows.Media.Core.h> // !!This is important!!
+#include <winrt/Windows.Storage.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Foundation.Collections.h>
+using namespace winrt;
+#endif
 
 namespace {
 
@@ -329,9 +336,16 @@ const char *GetConfigValue(const char *devName, const char *blockName, const cha
 #ifdef _WIN32
 void ReadALConfig()
 {
-    WCHAR buffer[MAX_PATH];
-    if(SHGetSpecialFolderPathW(nullptr, buffer, CSIDL_APPDATA, FALSE) != FALSE)
+#if !defined(_GAMING_XBOX)
     {
+#if !defined(ALSOFT_UWP)
+        WCHAR buffer[MAX_PATH];
+        if (!SHGetSpecialFolderPathW(nullptr, buffer, CSIDL_APPDATA, FALSE))
+            return;
+#else
+        winrt::Windows::Storage::ApplicationDataContainer localSettings = winrt::Windows::Storage::ApplicationData::Current().LocalSettings();
+        auto buffer = Windows::Storage::ApplicationData::Current().RoamingFolder().Path();
+#endif
         std::string filepath{wstr_to_utf8(buffer)};
         filepath += "\\alsoft.ini";
 
@@ -340,6 +354,8 @@ void ReadALConfig()
         if(f.is_open())
             LoadConfigFromFile(f);
     }
+#endif
+
 
     std::string ppath{GetProcBinary().path};
     if(!ppath.empty())

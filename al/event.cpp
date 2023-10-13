@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -27,9 +28,9 @@
 #include "core/logging.h"
 #include "core/voice_change.h"
 #include "debug.h"
+#include "direct_defs.h"
 #include "opthelpers.h"
 #include "ringbuffer.h"
-#include "threads.h"
 
 
 namespace {
@@ -55,7 +56,7 @@ int EventThread(ALCcontext *context)
 
         std::lock_guard<std::mutex> _{context->mEventCbLock};
         do {
-            auto *evt_ptr = reinterpret_cast<AsyncEvent*>(evt_data.buf);
+            auto *evt_ptr = std::launder(reinterpret_cast<AsyncEvent*>(evt_data.buf));
             evt_data.buf += sizeof(AsyncEvent);
             evt_data.len -= 1;
 
@@ -120,7 +121,7 @@ int EventThread(ALCcontext *context)
                 const std::string_view message{evt.msg};
 
                 context->debugMessage(DebugSource::System, DebugType::Error, 0,
-                    DebugSeverity::High, static_cast<ALsizei>(message.length()), message.data());
+                    DebugSeverity::High, message);
 
                 if(context->mEventCb
                     && enabledevts.test(al::to_underlying(AsyncEnableBits::Disconnected)))
@@ -129,12 +130,22 @@ int EventThread(ALCcontext *context)
                         context->mEventParam);
             };
 
-            std::visit(overloaded
-                {proc_srcstate, proc_buffercomp, proc_release, proc_disconnect, proc_killthread},
-                event);
+            std::visit(overloaded{proc_srcstate, proc_buffercomp, proc_release, proc_disconnect,
+                proc_killthread}, event);
         } while(evt_data.len != 0);
     }
     return 0;
+}
+
+constexpr std::optional<AsyncEnableBits> GetEventType(ALenum etype) noexcept
+{
+    switch(etype)
+    {
+    case AL_EVENT_TYPE_BUFFER_COMPLETED_SOFT: return AsyncEnableBits::BufferCompleted;
+    case AL_EVENT_TYPE_DISCONNECTED_SOFT: return AsyncEnableBits::Disconnected;
+    case AL_EVENT_TYPE_SOURCE_STATE_CHANGED_SOFT: return AsyncEnableBits::SourceState;
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -164,7 +175,7 @@ void StopEventThrd(ALCcontext *ctx)
             evt_data = ring->getWriteVector().first;
         } while(evt_data.len == 0);
     }
-    std::ignore = InitAsyncEvent<AsyncKillThread>(reinterpret_cast<AsyncEvent*>(evt_data.buf));
+    std::ignore = InitAsyncEvent<AsyncKillThread>(evt_data.buf);
     ring->writeAdvance(1);
 
     ctx->mEventSem.post();
@@ -172,34 +183,22 @@ void StopEventThrd(ALCcontext *ctx)
         ctx->mEventThread.join();
 }
 
-AL_API void AL_APIENTRY alEventControlSOFT(ALsizei count, const ALenum *types, ALboolean enable)
-START_API_FUNC
+AL_API DECL_FUNCEXT3(void, alEventControl,SOFT, ALsizei, const ALenum*, ALboolean)
+FORCE_ALIGN void AL_APIENTRY alEventControlDirectSOFT(ALCcontext *context, ALsizei count,
+    const ALenum *types, ALboolean enable) noexcept
 {
-    ContextRef context{GetContextRef()};
-    if(!context) UNLIKELY return;
-
     if(count < 0) context->setError(AL_INVALID_VALUE, "Controlling %d events", count);
     if(count <= 0) return;
     if(!types) return context->setError(AL_INVALID_VALUE, "NULL pointer");
 
     ContextBase::AsyncEventBitset flags{};
-    const ALenum *types_end = types+count;
-    auto bad_type = std::find_if_not(types, types_end,
-        [&flags](ALenum type) noexcept -> bool
-        {
-            if(type == AL_EVENT_TYPE_BUFFER_COMPLETED_SOFT)
-                flags.set(al::to_underlying(AsyncEnableBits::BufferCompleted));
-            else if(type == AL_EVENT_TYPE_SOURCE_STATE_CHANGED_SOFT)
-                flags.set(al::to_underlying(AsyncEnableBits::SourceState));
-            else if(type == AL_EVENT_TYPE_DISCONNECTED_SOFT)
-                flags.set(al::to_underlying(AsyncEnableBits::Disconnected));
-            else
-                return false;
-            return true;
-        }
-    );
-    if(bad_type != types_end)
-        return context->setError(AL_INVALID_ENUM, "Invalid event type 0x%04x", *bad_type);
+    for(ALenum evttype : al::span{types, static_cast<uint>(count)})
+    {
+        auto etype = GetEventType(evttype);
+        if(!etype)
+            return context->setError(AL_INVALID_ENUM, "Invalid event type 0x%04x", evttype);
+        flags.set(al::to_underlying(*etype));
+    }
 
     if(enable)
     {
@@ -225,17 +224,12 @@ START_API_FUNC
         std::lock_guard<std::mutex> _{context->mEventCbLock};
     }
 }
-END_API_FUNC
 
-AL_API void AL_APIENTRY alEventCallbackSOFT(ALEVENTPROCSOFT callback, void *userParam)
-START_API_FUNC
+AL_API DECL_FUNCEXT2(void, alEventCallback,SOFT, ALEVENTPROCSOFT, void*)
+FORCE_ALIGN void AL_APIENTRY alEventCallbackDirectSOFT(ALCcontext *context,
+    ALEVENTPROCSOFT callback, void *userParam) noexcept
 {
-    ContextRef context{GetContextRef()};
-    if(!context) UNLIKELY return;
-
-    std::lock_guard<std::mutex> _{context->mPropLock};
-    std::lock_guard<std::mutex> __{context->mEventCbLock};
+    std::lock_guard<std::mutex> _{context->mEventCbLock};
     context->mEventCb = callback;
     context->mEventParam = userParam;
 }
-END_API_FUNC

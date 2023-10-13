@@ -289,7 +289,7 @@ void DirectHrtfState::build(const HrtfStore *Hrtf, const uint irSize, const bool
     mChannels[0].mSplitter.init(static_cast<float>(xover_norm));
     for(size_t i{0};i < mChannels.size();++i)
     {
-        const size_t order{AmbiIndex::OrderFromChannel()[i]};
+        const size_t order{AmbiIndex::OrderFromChannel[i]};
         mChannels[i].mSplitter = mChannels[0].mSplitter;
         mChannels[i].mHfScale = AmbiOrderHFGain[order];
     }
@@ -1368,7 +1368,7 @@ HrtfStorePtr GetLoadedHrtf(const std::string &name, const uint devrate)
         TRACE("Resampling HRTF %s (%uhz -> %uhz)\n", name.c_str(), hrtf->mSampleRate, devrate);
 
         /* Calculate the last elevation's index and get the total IR count. */
-        const size_t lastEv{std::accumulate(hrtf->mFields.begin(), hrtf->mFields.end(), size_t{0},
+        const size_t lastEv{std::accumulate(hrtf->mFields.begin(), hrtf->mFields.end(), 0_uz,
             [](const size_t curval, const HrtfStore::Field &field) noexcept -> size_t
             { return curval + field.evCount; }
         ) - 1};

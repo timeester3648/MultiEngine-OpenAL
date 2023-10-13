@@ -226,8 +226,7 @@ void SendSourceStoppedEvent(ContextBase *context, uint id)
     auto evt_vec = ring->getWriteVector();
     if(evt_vec.first.len < 1) return;
 
-    AsyncSourceStateEvent &evt = InitAsyncEvent<AsyncSourceStateEvent>(
-        reinterpret_cast<AsyncEvent*>(evt_vec.first.buf));
+    auto &evt = InitAsyncEvent<AsyncSourceStateEvent>(evt_vec.first.buf);
     evt.mId = id;
     evt.mState = AsyncSrcState::Stop;
 
@@ -331,7 +330,7 @@ inline void LoadSamples<FmtIMA4>(float *RESTRICT dstSamples, const std::byte *sr
         for(;skip;--skip)
         {
             const size_t byteShift{(nibbleOffset&1) * 4};
-            const size_t wordOffset{(nibbleOffset>>1) & ~size_t{3}};
+            const size_t wordOffset{(nibbleOffset>>1) & ~3_uz};
             const size_t byteOffset{wordOffset*srcStep + ((nibbleOffset>>1)&3u)};
             ++nibbleOffset;
 
@@ -345,7 +344,7 @@ inline void LoadSamples<FmtIMA4>(float *RESTRICT dstSamples, const std::byte *sr
         for(size_t i{0};i < todo;++i)
         {
             const size_t byteShift{(nibbleOffset&1) * 4};
-            const size_t wordOffset{(nibbleOffset>>1) & ~size_t{3}};
+            const size_t wordOffset{(nibbleOffset>>1) & ~3_uz};
             const size_t byteOffset{wordOffset*srcStep + ((nibbleOffset>>1)&3u)};
             ++nibbleOffset;
 
@@ -1151,8 +1150,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
         auto evt_vec = ring->getWriteVector();
         if(evt_vec.first.len > 0)
         {
-            AsyncBufferCompleteEvent &evt = InitAsyncEvent<AsyncBufferCompleteEvent>(
-                reinterpret_cast<AsyncEvent*>(evt_vec.first.buf));
+            auto &evt = InitAsyncEvent<AsyncBufferCompleteEvent>(evt_vec.first.buf);
             evt.mId = SourceID;
             evt.mCount = buffers_done;
             ring->writeAdvance(1);
@@ -1275,7 +1273,7 @@ void Voice::prepare(DeviceBase *device)
     else if(mAmbiOrder && device->mAmbiOrder > mAmbiOrder)
     {
         const uint8_t *OrderFromChan{Is2DAmbisonic(mFmtChannels) ?
-            AmbiIndex::OrderFrom2DChannel().data() : AmbiIndex::OrderFromChannel().data()};
+            AmbiIndex::OrderFrom2DChannel.data() : AmbiIndex::OrderFromChannel.data()};
         const auto scales = AmbiScale::GetHFOrderScales(mAmbiOrder, device->mAmbiOrder,
             device->m2DMixing);
 

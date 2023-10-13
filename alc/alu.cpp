@@ -77,7 +77,6 @@
 #include "opthelpers.h"
 #include "ringbuffer.h"
 #include "strutils.h"
-#include "threads.h"
 #include "vecmat.h"
 #include "vector.h"
 
@@ -135,12 +134,6 @@ float ZScale{1.0f};
 /* Source distance scale for NFC filters. */
 float NfcScale{1.0f};
 
-
-struct ChanMap {
-    Channel channel;
-    float angle;
-    float elevation;
-};
 
 using HrtfDirectMixerFunc = void(*)(const FloatBufferSpan LeftOut, const FloatBufferSpan RightOut,
     const al::span<const FloatBufferLine> InSamples, float2 *AccumSamples, float *TempBuf,
@@ -377,28 +370,28 @@ void UpsampleBFormatTransform(
 }
 
 
-inline auto& GetAmbiScales(AmbiScaling scaletype) noexcept
+constexpr auto GetAmbiScales(AmbiScaling scaletype) noexcept
 {
     switch(scaletype)
     {
-    case AmbiScaling::FuMa: return AmbiScale::FromFuMa();
-    case AmbiScaling::SN3D: return AmbiScale::FromSN3D();
-    case AmbiScaling::UHJ: return AmbiScale::FromUHJ();
+    case AmbiScaling::FuMa: return al::span{AmbiScale::FromFuMa};
+    case AmbiScaling::SN3D: return al::span{AmbiScale::FromSN3D};
+    case AmbiScaling::UHJ: return al::span{AmbiScale::FromUHJ};
     case AmbiScaling::N3D: break;
     }
-    return AmbiScale::FromN3D();
+    return al::span{AmbiScale::FromN3D};
 }
 
-inline auto& GetAmbiLayout(AmbiLayout layouttype) noexcept
+constexpr auto GetAmbiLayout(AmbiLayout layouttype) noexcept
 {
-    if(layouttype == AmbiLayout::FuMa) return AmbiIndex::FromFuMa();
-    return AmbiIndex::FromACN();
+    if(layouttype == AmbiLayout::FuMa) return al::span{AmbiIndex::FromFuMa};
+    return al::span{AmbiIndex::FromACN};
 }
 
-inline auto& GetAmbi2DLayout(AmbiLayout layouttype) noexcept
+constexpr auto GetAmbi2DLayout(AmbiLayout layouttype) noexcept
 {
-    if(layouttype == AmbiLayout::FuMa) return AmbiIndex::FromFuMa2D();
-    return AmbiIndex::FromACN2D();
+    if(layouttype == AmbiLayout::FuMa) return al::span{AmbiIndex::FromFuMa2D};
+    return al::span{AmbiIndex::FromACN2D};
 }
 
 
@@ -491,8 +484,7 @@ bool CalcEffectSlotParams(EffectSlot *slot, EffectSlot **sorted_slots, ContextBa
         auto evt_vec = ring->getWriteVector();
         if(evt_vec.first.len > 0) LIKELY
         {
-            AsyncEffectReleaseEvent &evt = InitAsyncEvent<AsyncEffectReleaseEvent>(
-                reinterpret_cast<AsyncEvent*>(evt_vec.first.buf));
+            auto &evt = InitAsyncEvent<AsyncEffectReleaseEvent>(evt_vec.first.buf);
             evt.mEffectState = oldstate;
             ring->writeAdvance(1);
         }
@@ -522,26 +514,75 @@ bool CalcEffectSlotParams(EffectSlot *slot, EffectSlot **sorted_slots, ContextBa
 }
 
 
-/* Scales the given azimuth toward the side (+/- pi/2 radians) for positions in
- * front.
+/* Scales the azimuth of the given vector by 3 if it's in front. Effectively
+ * scales +/-30 degrees to +/-90 degrees, leaving > +90 and < -90 alone.
  */
-inline float ScaleAzimuthFront(float azimuth, float scale)
+inline std::array<float,3> ScaleAzimuthFront3(std::array<float,3> pos)
 {
-    const float abs_azi{std::fabs(azimuth)};
-    if(!(abs_azi >= al::numbers::pi_v<float>*0.5f))
-        return std::copysign(minf(abs_azi*scale, al::numbers::pi_v<float>*0.5f), azimuth);
-    return azimuth;
+    if(pos[2] < 0.0f)
+    {
+        /* Normalize the length of the x,z components for a 2D vector of the
+         * azimuth angle. Negate Z since {0,0,-1} is angle 0.
+         */
+        const float len2d{std::sqrt(pos[0]*pos[0] + pos[2]*pos[2])};
+        float x{pos[0] / len2d};
+        float z{-pos[2] / len2d};
+
+        /* Z > cos(pi/6) = -30 < azimuth < 30 degrees. */
+        if(z > 0.866025403785f)
+        {
+            /* Triple the angle represented by x,z. */
+            x = x*3.0f - x*x*x*4.0f;
+            z = z*z*z*4.0f - z*3.0f;
+
+            /* Scale the vector back to fit in 3D. */
+            pos[0] = x * len2d;
+            pos[2] = -z * len2d;
+        }
+        else
+        {
+            /* If azimuth >= 30 degrees, clamp to 90 degrees. */
+            pos[0] = std::copysign(len2d, pos[0]);
+            pos[2] = 0.0f;
+        }
+    }
+    return pos;
 }
 
-/* Wraps the given value in radians to stay between [-pi,+pi] */
-inline float WrapRadians(float r)
+/* Scales the azimuth of the given vector by 1.5 (3/2) if it's in front. */
+inline std::array<float,3> ScaleAzimuthFront3_2(std::array<float,3> pos)
 {
-    static constexpr float Pi{al::numbers::pi_v<float>};
-    static constexpr float Pi2{Pi*2.0f};
-    if(r >  Pi) return std::fmod(Pi+r, Pi2) - Pi;
-    if(r < -Pi) return Pi - std::fmod(Pi-r, Pi2);
-    return r;
+    if(pos[2] < 0.0f)
+    {
+        const float len2d{std::sqrt(pos[0]*pos[0] + pos[2]*pos[2])};
+        float x{pos[0] / len2d};
+        float z{-pos[2] / len2d};
+
+        /* Z > cos(pi/3) = -60 < azimuth < 60 degrees. */
+        if(z > 0.5f)
+        {
+            /* Halve the angle represented by x,z. */
+            x = std::copysign(std::sqrt((1.0f - z) * 0.5f), x);
+            z = std::sqrt((1.0f + z) * 0.5f);
+
+            /* Triple the angle represented by x,z. */
+            x = x*3.0f - x*x*x*4.0f;
+            z = z*z*z*4.0f - z*3.0f;
+
+            /* Scale the vector back to fit in 3D. */
+            pos[0] = x * len2d;
+            pos[2] = -z * len2d;
+        }
+        else
+        {
+            /* If azimuth >= 60 degrees, clamp to 90 degrees. */
+            pos[0] = std::copysign(len2d, pos[0]);
+            pos[2] = 0.0f;
+        }
+    }
+    return pos;
 }
+
 
 /* Begin ambisonic rotation helpers.
  *
@@ -586,17 +627,38 @@ struct RotatorCoeffs {
             {
                 for(int m{-l};m <= l;++m)
                 {
-                    // compute u,v,w terms of Eq.8.1 (Table I)
-                    const bool d{m == 0}; // the delta function d_m0
-                    const float denom{static_cast<float>((std::abs(n) == l) ?
-                        (2*l) * (2*l - 1) : (l*l - n*n))};
+                    /* compute u,v,w terms of Eq.8.1 (Table I)
+                     *
+                     * const bool d{m == 0}; // the delta function d_m0
+                     * const double denom{(std::abs(n) == l) ?
+                     *     (2*l) * (2*l - 1) : (l*l - n*n)};
+                     *
+                     * const int abs_m{std::abs(m)};
+                     * coeffs->u = std::sqrt((l*l - m*m) / denom);
+                     * coeffs->v = std::sqrt((l+abs_m-1) * (l+abs_m) / denom) *
+                     *     (1.0+d) * (1.0 - 2.0*d) * 0.5;
+                     * coeffs->w = std::sqrt((l-abs_m-1) * (l-abs_m) / denom) *
+                     *     (1.0-d) * -0.5;
+                     */
 
-                    const int abs_m{std::abs(m)};
-                    coeffs->u = std::sqrt(static_cast<float>(l*l - m*m)/denom);
-                    coeffs->v = std::sqrt(static_cast<float>(l+abs_m-1) *
-                        static_cast<float>(l+abs_m) / denom) * (1.0f+d) * (1.0f - 2.0f*d) * 0.5f;
-                    coeffs->w = std::sqrt(static_cast<float>(l-abs_m-1) *
-                        static_cast<float>(l-abs_m) / denom) * (1.0f-d) * -0.5f;
+                    const double denom{static_cast<double>((std::abs(n) == l) ?
+                          (2*l) * (2*l - 1) : (l*l - n*n))};
+
+                    if(m == 0)
+                    {
+                        coeffs->u = static_cast<float>(std::sqrt(l * l / denom));
+                        coeffs->v = static_cast<float>(std::sqrt((l-1) * l / denom) * -1.0);
+                        coeffs->w = 0.0f;
+                    }
+                    else
+                    {
+                        const int abs_m{std::abs(m)};
+                        coeffs->u = static_cast<float>(std::sqrt((l*l - m*m) / denom));
+                        coeffs->v = static_cast<float>(std::sqrt((l+abs_m-1) * (l+abs_m) / denom) *
+                            0.5);
+                        coeffs->w = static_cast<float>(std::sqrt((l-abs_m-1) * (l-abs_m) / denom) *
+                            -0.5);
+                    }
                     ++coeffs;
                 }
             }
@@ -680,26 +742,36 @@ void AmbiRotator(AmbiRotateMatrix &matrix, const int order)
                 float r{0.0f};
 
                 // computes Eq.8.1
-                const float u{coeffs->u};
-                if(u != 0.0f) r += u * U(l, m, n, last_band, matrix);
-                const float v{coeffs->v};
-                if(v != 0.0f) r += v * V(l, m, n, last_band, matrix);
-                const float w{coeffs->w};
-                if(w != 0.0f) r += w * W(l, m, n, last_band, matrix);
+                if(const float u{coeffs->u}; u != 0.0f)
+                    r += u * U(l, m, n, last_band, matrix);
+                if(const float v{coeffs->v}; v != 0.0f)
+                    r += v * V(l, m, n, last_band, matrix);
+                if(const float w{coeffs->w}; w != 0.0f)
+                    r += w * W(l, m, n, last_band, matrix);
 
                 matrix[y][x] = r;
                 ++coeffs;
             }
         }
         last_band = band_idx;
-        band_idx += static_cast<uint>(l)*size_t{2} + 1;
+        band_idx += static_cast<uint>(l)*2_uz + 1;
     }
 }
 /* End ambisonic rotation helpers. */
 
 
-constexpr float Deg2Rad(float x) noexcept
-{ return static_cast<float>(al::numbers::pi / 180.0 * x); }
+constexpr float sin30{0.5f};
+constexpr float cos30{0.866025403785f};
+constexpr float sin45{al::numbers::sqrt2_v<float>*0.5f};
+constexpr float cos45{al::numbers::sqrt2_v<float>*0.5f};
+constexpr float sin110{ 0.939692620786f};
+constexpr float cos110{-0.342020143326f};
+
+struct ChanPosMap {
+    Channel channel;
+    std::array<float,3> pos;
+};
+
 
 struct GainTriplet { float Base, HF, LF; };
 
@@ -708,45 +780,45 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
     const al::span<const GainTriplet,MAX_SENDS> WetGain, EffectSlot *(&SendSlots)[MAX_SENDS],
     const VoiceProps *props, const ContextParams &Context, DeviceBase *Device)
 {
-    static constexpr ChanMap MonoMap[1]{
-        { FrontCenter, 0.0f, 0.0f }
+    static constexpr ChanPosMap MonoMap[1]{
+        { FrontCenter, std::array{0.0f, 0.0f, -1.0f} }
     }, RearMap[2]{
-        { BackLeft,  Deg2Rad(-150.0f), Deg2Rad(0.0f) },
-        { BackRight, Deg2Rad( 150.0f), Deg2Rad(0.0f) }
+        { BackLeft,  std::array{-sin30, 0.0f, cos30} },
+        { BackRight, std::array{ sin30, 0.0f, cos30} },
     }, QuadMap[4]{
-        { FrontLeft,  Deg2Rad( -45.0f), Deg2Rad(0.0f) },
-        { FrontRight, Deg2Rad(  45.0f), Deg2Rad(0.0f) },
-        { BackLeft,   Deg2Rad(-135.0f), Deg2Rad(0.0f) },
-        { BackRight,  Deg2Rad( 135.0f), Deg2Rad(0.0f) }
+        { FrontLeft,  std::array{-sin45, 0.0f, -cos45} },
+        { FrontRight, std::array{ sin45, 0.0f, -cos45} },
+        { BackLeft,   std::array{-sin45, 0.0f,  cos45} },
+        { BackRight,  std::array{ sin45, 0.0f,  cos45} },
     }, X51Map[6]{
-        { FrontLeft,   Deg2Rad( -30.0f), Deg2Rad(0.0f) },
-        { FrontRight,  Deg2Rad(  30.0f), Deg2Rad(0.0f) },
-        { FrontCenter, Deg2Rad(   0.0f), Deg2Rad(0.0f) },
-        { LFE, 0.0f, 0.0f },
-        { SideLeft,    Deg2Rad(-110.0f), Deg2Rad(0.0f) },
-        { SideRight,   Deg2Rad( 110.0f), Deg2Rad(0.0f) }
+        { FrontLeft,   std::array{-sin30, 0.0f, -cos30} },
+        { FrontRight,  std::array{ sin30, 0.0f, -cos30} },
+        { FrontCenter, std::array{  0.0f, 0.0f, -1.0f} },
+        { LFE, {} },
+        { SideLeft,    std::array{-sin110, 0.0f, -cos110} },
+        { SideRight,   std::array{ sin110, 0.0f, -cos110} },
     }, X61Map[7]{
-        { FrontLeft,   Deg2Rad(-30.0f), Deg2Rad(0.0f) },
-        { FrontRight,  Deg2Rad( 30.0f), Deg2Rad(0.0f) },
-        { FrontCenter, Deg2Rad(  0.0f), Deg2Rad(0.0f) },
-        { LFE, 0.0f, 0.0f },
-        { BackCenter,  Deg2Rad(180.0f), Deg2Rad(0.0f) },
-        { SideLeft,    Deg2Rad(-90.0f), Deg2Rad(0.0f) },
-        { SideRight,   Deg2Rad( 90.0f), Deg2Rad(0.0f) }
+        { FrontLeft,   std::array{-sin30, 0.0f, -cos30} },
+        { FrontRight,  std::array{ sin30, 0.0f, -cos30} },
+        { FrontCenter, std::array{  0.0f, 0.0f, -1.0f} },
+        { LFE, {} },
+        { BackCenter,  std::array{ 0.0f, 0.0f, 1.0f} },
+        { SideLeft,    std::array{-1.0f, 0.0f, 0.0f} },
+        { SideRight,   std::array{ 1.0f, 0.0f, 0.0f} },
     }, X71Map[8]{
-        { FrontLeft,   Deg2Rad( -30.0f), Deg2Rad(0.0f) },
-        { FrontRight,  Deg2Rad(  30.0f), Deg2Rad(0.0f) },
-        { FrontCenter, Deg2Rad(   0.0f), Deg2Rad(0.0f) },
-        { LFE, 0.0f, 0.0f },
-        { BackLeft,    Deg2Rad(-150.0f), Deg2Rad(0.0f) },
-        { BackRight,   Deg2Rad( 150.0f), Deg2Rad(0.0f) },
-        { SideLeft,    Deg2Rad( -90.0f), Deg2Rad(0.0f) },
-        { SideRight,   Deg2Rad(  90.0f), Deg2Rad(0.0f) }
+        { FrontLeft,   std::array{-sin30, 0.0f, -cos30} },
+        { FrontRight,  std::array{ sin30, 0.0f, -cos30} },
+        { FrontCenter, std::array{  0.0f, 0.0f, -1.0f} },
+        { LFE, {} },
+        { BackLeft,    std::array{-sin30, 0.0f, cos30} },
+        { BackRight,   std::array{ sin30, 0.0f, cos30} },
+        { SideLeft,    std::array{ -1.0f, 0.0f, 0.0f} },
+        { SideRight,   std::array{  1.0f, 0.0f, 0.0f} },
     };
 
-    ChanMap StereoMap[2]{
-        { FrontLeft,  Deg2Rad(-30.0f), Deg2Rad(0.0f) },
-        { FrontRight, Deg2Rad( 30.0f), Deg2Rad(0.0f) }
+    ChanPosMap StereoMap[2]{
+        { FrontLeft,   std::array{-sin30, 0.0f, -cos30} },
+        { FrontRight,  std::array{ sin30, 0.0f, -cos30} },
     };
 
     const auto Frequency = static_cast<float>(Device->Frequency);
@@ -764,7 +836,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
     }
 
     DirectMode DirectChannels{props->DirectChannels};
-    const ChanMap *chans{nullptr};
+    const ChanPosMap *chans{nullptr};
     switch(voice->mFmtChannels)
     {
     case FmtMono:
@@ -776,11 +848,13 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
     case FmtStereo:
         if(DirectChannels == DirectMode::Off)
         {
-            /* Convert counter-clockwise to clock-wise, and wrap between
-             * [-pi,+pi].
-             */
-            StereoMap[0].angle = WrapRadians(-props->StereoPan[0]);
-            StereoMap[1].angle = WrapRadians(-props->StereoPan[1]);
+            for(size_t i{0};i < 2;++i)
+            {
+                /* StereoPan is counter-clockwise in radians. */
+                const float a{props->StereoPan[i]};
+                StereoMap[i].pos[0] = -std::sin(a);
+                StereoMap[i].pos[2] = -std::cos(a);
+            }
         }
         chans = StereoMap;
         break;
@@ -846,22 +920,11 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
         auto calc_coeffs = [xpos,ypos,zpos](RenderMode mode)
         {
             if(mode != RenderMode::Pairwise)
-                return CalcDirectionCoeffs({xpos, ypos, zpos});
-
-            /* Clamp Y, in case rounding errors caused it to end up outside
-             * of -1...+1.
-             */
-            const float ev{std::asin(clampf(ypos, -1.0f, 1.0f))};
-            /* Negate Z for right-handed coords with -Z in front. */
-            const float az{std::atan2(xpos, -zpos)};
-
-            /* A scalar of 1.5 for plain stereo results in +/-60 degrees
-             * being moved to +/-90 degrees for direct right and left
-             * speaker responses.
-             */
-            return CalcAngleCoeffs(ScaleAzimuthFront(az, 1.5f), ev, 0.0f);
+                return CalcDirectionCoeffs(std::array{xpos, ypos, zpos}, 0.0f);
+            const auto pos = ScaleAzimuthFront3_2(std::array{xpos, ypos, zpos});
+            return CalcDirectionCoeffs(pos, 0.0f);
         };
-        auto&& scales = GetAmbiScales(voice->mAmbiScaling);
+        const auto scales = GetAmbiScales(voice->mAmbiScaling);
         auto coeffs = calc_coeffs(Device->mRenderMode);
 
         if(!(coverage > 0.0f))
@@ -923,25 +986,25 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
             {
                 if(voice->mAmbiOrder == 1)
                 {
-                    auto&& upsampler = Is2DAmbisonic(voice->mFmtChannels) ?
-                        AmbiScale::FirstOrder2DUp : AmbiScale::FirstOrderUp;
+                    const auto upsampler = Is2DAmbisonic(voice->mFmtChannels) ?
+                        al::span{AmbiScale::FirstOrder2DUp} : al::span{AmbiScale::FirstOrderUp};
                     UpsampleBFormatTransform(mixmatrix, upsampler, shrot, Device->mAmbiOrder);
                 }
                 else if(voice->mAmbiOrder == 2)
                 {
-                    auto&& upsampler = Is2DAmbisonic(voice->mFmtChannels) ?
-                        AmbiScale::SecondOrder2DUp : AmbiScale::SecondOrderUp;
+                    const auto upsampler = Is2DAmbisonic(voice->mFmtChannels) ?
+                        al::span{AmbiScale::SecondOrder2DUp} : al::span{AmbiScale::SecondOrderUp};
                     UpsampleBFormatTransform(mixmatrix, upsampler, shrot, Device->mAmbiOrder);
                 }
                 else if(voice->mAmbiOrder == 3)
                 {
-                    auto&& upsampler = Is2DAmbisonic(voice->mFmtChannels) ?
-                        AmbiScale::ThirdOrder2DUp : AmbiScale::ThirdOrderUp;
+                    const auto upsampler = Is2DAmbisonic(voice->mFmtChannels) ?
+                        al::span{AmbiScale::ThirdOrder2DUp} : al::span{AmbiScale::ThirdOrderUp};
                     UpsampleBFormatTransform(mixmatrix, upsampler, shrot, Device->mAmbiOrder);
                 }
                 else if(voice->mAmbiOrder == 4)
                 {
-                    auto&& upsampler = AmbiScale::FourthOrder2DUp;
+                    const auto upsampler = al::span{AmbiScale::FourthOrder2DUp};
                     UpsampleBFormatTransform(mixmatrix, upsampler, shrot, Device->mAmbiOrder);
                 }
                 else
@@ -1029,7 +1092,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
             if(chans[c].channel == LFE)
                 continue;
 
-            const auto coeffs = CalcAngleCoeffs(chans[c].angle, chans[c].elevation, 0.0f);
+            const auto coeffs = CalcDirectionCoeffs(chans[c].pos, 0.0f);
 
             for(uint i{0};i < NumSends;i++)
             {
@@ -1048,17 +1111,17 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
 
         if(Distance > std::numeric_limits<float>::epsilon())
         {
-            const float src_ev{std::asin(clampf(ypos, -1.0f, 1.0f))};
-            const float src_az{std::atan2(xpos, -zpos)};
-
             if(voice->mFmtChannels == FmtMono)
             {
+                const float src_ev{std::asin(clampf(ypos, -1.0f, 1.0f))};
+                const float src_az{std::atan2(xpos, -zpos)};
+
                 Device->mHrtf->getCoeffs(src_ev, src_az, Distance*NfcScale, Spread,
                     voice->mChans[0].mDryParams.Hrtf.Target.Coeffs,
                     voice->mChans[0].mDryParams.Hrtf.Target.Delay);
                 voice->mChans[0].mDryParams.Hrtf.Target.Gain = DryGain.Base;
 
-                const auto coeffs = CalcAngleCoeffs(src_az, src_ev, Spread);
+                const auto coeffs = CalcDirectionCoeffs(std::array{xpos, ypos, zpos}, Spread);
                 for(uint i{0};i < NumSends;i++)
                 {
                     if(const EffectSlot *Slot{SendSlots[i]})
@@ -1078,24 +1141,28 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                  * the source position, at full spread (pi*2), each channel is
                  * left unchanged.
                  */
-                const float ev{lerpf(src_ev, chans[c].elevation, inv_pi_v<float>/2.0f * Spread)};
+                const float a{1.0f - (inv_pi_v<float>/2.0f)*Spread};
+                std::array pos{
+                    lerpf(chans[c].pos[0], xpos, a),
+                    lerpf(chans[c].pos[1], ypos, a),
+                    lerpf(chans[c].pos[2], zpos, a)};
+                const float len{std::sqrt(pos[0]*pos[0] + pos[1]*pos[1] + pos[2]*pos[2])};
+                if(len < 1.0f)
+                {
+                    pos[0] /= len;
+                    pos[1] /= len;
+                    pos[2] /= len;
+                }
 
-                float az{chans[c].angle - src_az};
-                if(az < -pi_v<float>) az += pi_v<float>*2.0f;
-                else if(az > pi_v<float>) az -= pi_v<float>*2.0f;
-
-                az *= inv_pi_v<float>/2.0f * Spread;
-
-                az += src_az;
-                if(az < -pi_v<float>) az += pi_v<float>*2.0f;
-                else if(az > pi_v<float>) az -= pi_v<float>*2.0f;
+                const float ev{std::asin(clampf(pos[1], -1.0f, 1.0f))};
+                const float az{std::atan2(pos[0], -pos[2])};
 
                 Device->mHrtf->getCoeffs(ev, az, Distance*NfcScale, 0.0f,
                     voice->mChans[c].mDryParams.Hrtf.Target.Coeffs,
                     voice->mChans[c].mDryParams.Hrtf.Target.Delay);
                 voice->mChans[c].mDryParams.Hrtf.Target.Gain = DryGain.Base;
 
-                const auto coeffs = CalcAngleCoeffs(az, ev, 0.0f);
+                const auto coeffs = CalcDirectionCoeffs(pos, 0.0f);
                 for(uint i{0};i < NumSends;i++)
                 {
                     if(const EffectSlot *Slot{SendSlots[i]})
@@ -1125,14 +1192,16 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                 /* Get the HRIR coefficients and delays for this channel
                  * position.
                  */
-                Device->mHrtf->getCoeffs(chans[c].elevation, chans[c].angle,
-                    std::numeric_limits<float>::infinity(), spread,
+                const float ev{std::asin(chans[c].pos[1])};
+                const float az{std::atan2(chans[c].pos[0], -chans[c].pos[2])};
+
+                Device->mHrtf->getCoeffs(ev, az, std::numeric_limits<float>::infinity(), spread,
                     voice->mChans[c].mDryParams.Hrtf.Target.Coeffs,
                     voice->mChans[c].mDryParams.Hrtf.Target.Delay);
                 voice->mChans[c].mDryParams.Hrtf.Target.Gain = DryGain.Base;
 
                 /* Normal panning for auxiliary sends. */
-                const auto coeffs = CalcAngleCoeffs(chans[c].angle, chans[c].elevation, spread);
+                const auto coeffs = CalcDirectionCoeffs(chans[c].pos, spread);
 
                 for(uint i{0};i < NumSends;i++)
                 {
@@ -1172,10 +1241,9 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                 auto calc_coeffs = [xpos,ypos,zpos,Spread](RenderMode mode)
                 {
                     if(mode != RenderMode::Pairwise)
-                        return CalcDirectionCoeffs({xpos, ypos, zpos}, Spread);
-                    const float ev{std::asin(clampf(ypos, -1.0f, 1.0f))};
-                    const float az{std::atan2(xpos, -zpos)};
-                    return CalcAngleCoeffs(ScaleAzimuthFront(az, 1.5f), ev, Spread);
+                        return CalcDirectionCoeffs(std::array{xpos, ypos, zpos}, Spread);
+                    const auto pos = ScaleAzimuthFront3_2(std::array{xpos, ypos, zpos});
+                    return CalcDirectionCoeffs(pos, Spread);
                 };
                 const auto coeffs = calc_coeffs(Device->mRenderMode);
 
@@ -1191,9 +1259,6 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
             else
             {
                 using namespace al::numbers;
-
-                const float src_ev{std::asin(clampf(ypos, -1.0f, 1.0f))};
-                const float src_az{std::atan2(xpos, -zpos)};
 
                 for(size_t c{0};c < num_channels;c++)
                 {
@@ -1214,22 +1279,22 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                      * at the source position, at full spread (pi*2), each
                      * channel position is left unchanged.
                      */
-                    const float ev{lerpf(src_ev, chans[c].elevation,
-                        inv_pi_v<float>/2.0f * Spread)};
-
-                    float az{chans[c].angle - src_az};
-                    if(az < -pi_v<float>) az += pi_v<float>*2.0f;
-                    else if(az > pi_v<float>) az -= pi_v<float>*2.0f;
-
-                    az *= inv_pi_v<float>/2.0f * Spread;
-
-                    az += src_az;
-                    if(az < -pi_v<float>) az += pi_v<float>*2.0f;
-                    else if(az > pi_v<float>) az -= pi_v<float>*2.0f;
+                    const float a{1.0f - (inv_pi_v<float>/2.0f)*Spread};
+                    std::array pos{
+                        lerpf(chans[c].pos[0], xpos, a),
+                        lerpf(chans[c].pos[1], ypos, a),
+                        lerpf(chans[c].pos[2], zpos, a)};
+                    const float len{std::sqrt(pos[0]*pos[0] + pos[1]*pos[1] + pos[2]*pos[2])};
+                    if(len < 1.0f)
+                    {
+                        pos[0] /= len;
+                        pos[1] /= len;
+                        pos[2] /= len;
+                    }
 
                     if(Device->mRenderMode == RenderMode::Pairwise)
-                        az = ScaleAzimuthFront(az, 3.0f);
-                    const auto coeffs = CalcAngleCoeffs(az, ev, 0.0f);
+                        pos = ScaleAzimuthFront3(pos);
+                    const auto coeffs = CalcDirectionCoeffs(pos, 0.0f);
 
                     ComputePanGains(&Device->Dry, coeffs.data(), DryGain.Base,
                         voice->mChans[c].mDryParams.Gains.Target);
@@ -1275,9 +1340,8 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
                     continue;
                 }
 
-                const auto coeffs = CalcAngleCoeffs((Device->mRenderMode == RenderMode::Pairwise)
-                    ? ScaleAzimuthFront(chans[c].angle, 3.0f) : chans[c].angle,
-                    chans[c].elevation, spread);
+                const auto coeffs = CalcDirectionCoeffs((Device->mRenderMode==RenderMode::Pairwise)
+                    ? ScaleAzimuthFront3(chans[c].pos) : chans[c].pos, spread);
 
                 ComputePanGains(&Device->Dry, coeffs.data(), DryGain.Base,
                     voice->mChans[c].mDryParams.Gains.Target);
@@ -1701,8 +1765,7 @@ void SendSourceStateEvent(ContextBase *context, uint id, VChangeState state)
     auto evt_vec = ring->getWriteVector();
     if(evt_vec.first.len < 1) return;
 
-    AsyncSourceStateEvent &evt = InitAsyncEvent<AsyncSourceStateEvent>(
-        reinterpret_cast<AsyncEvent*>(evt_vec.first.buf));
+    auto &evt = InitAsyncEvent<AsyncSourceStateEvent>(evt_vec.first.buf);
     evt.mId = id;
     switch(state)
     {
@@ -1856,7 +1919,7 @@ void ProcessContexts(DeviceBase *device, const uint SamplesToDo)
         const EffectSlotArray &auxslots = *ctx->mActiveAuxSlots.load(std::memory_order_acquire);
         const al::span<Voice*> voices{ctx->getVoicesSpanAcquired()};
 
-        /* Process pending propery updates for objects on the context. */
+        /* Process pending property updates for objects on the context. */
         ProcessParamUpdates(ctx, auxslots, voices);
 
         /* Clear auxiliary effect slot mixing buffers. */
