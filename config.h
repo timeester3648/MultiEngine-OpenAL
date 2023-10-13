@@ -1,6 +1,9 @@
 #include "MultiEngine/MultiEngineConfig.h"
 
 #ifdef MLE_PLATFORM_WINDOWS
+/* Define the alignment attribute for externally callable functions. */
+#define FORCE_ALIGN 
+
 /* Define if deprecated EAX extensions are enabled */
 #define ALSOFT_EAX
 
@@ -107,9 +110,9 @@
 #define HAVE_CPUID_INTRINSIC
 
 /* Define if we have SSE intrinsics */
-#if MLE_ENABLE_INTRINSICS
-	#define HAVE_SSE_INTRINSICS
-#endif
+//#if HAVE_SSE || HAVE_SSE2 || HAVE_SSE3 || HAVE_SSE4_1
+//	#define HAVE_SSE_INTRINSICS
+//#endif
 
 /* Define if we have pthread_setschedparam() */
 /* #undef HAVE_PTHREAD_SETSCHEDPARAM */
@@ -119,6 +122,12 @@
 
 /* Define if we have pthread_set_name_np() */
 /* #undef HAVE_PTHREAD_SET_NAME_NP */
+
+/* Define the installation data directory */
+/* #undef ALSOFT_INSTALL_DATADIR */
+
+/* Define whether build alsoft for winuwp */
+/* #undef ALSOFT_UWP */
 #else
 	#error Unsupported platform
 #endif
