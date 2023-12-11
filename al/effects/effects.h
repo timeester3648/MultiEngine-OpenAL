@@ -16,15 +16,15 @@ class effect_exception final : public al::base_exception {
     ALenum mErrorCode;
 
 public:
-#ifdef __USE_MINGW_ANSI_STDIO
-    [[gnu::format(gnu_printf, 3, 4)]]
+#ifdef __MINGW32__
+    [[gnu::format(__MINGW_PRINTF_FORMAT, 3, 4)]]
 #else
     [[gnu::format(printf, 3, 4)]]
 #endif
     effect_exception(ALenum code, const char *msg, ...);
     ~effect_exception() override;
 
-    ALenum errorCode() const noexcept { return mErrorCode; }
+    [[nodiscard]] auto errorCode() const noexcept -> ALenum { return mErrorCode; }
 };
 
 

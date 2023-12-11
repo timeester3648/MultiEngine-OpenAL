@@ -55,31 +55,31 @@ namespace {
 
 struct FactoryItem {
     EffectSlotType Type;
-    EffectStateFactory* (&GetFactory)(void);
+    EffectStateFactory* (&GetFactory)();
 };
-constexpr FactoryItem FactoryList[] = {
-    { EffectSlotType::None, NullStateFactory_getFactory },
-    { EffectSlotType::EAXReverb, ReverbStateFactory_getFactory },
-    { EffectSlotType::Reverb, StdReverbStateFactory_getFactory },
-    { EffectSlotType::Autowah, AutowahStateFactory_getFactory },
-    { EffectSlotType::Chorus, ChorusStateFactory_getFactory },
-    { EffectSlotType::Compressor, CompressorStateFactory_getFactory },
-    { EffectSlotType::Distortion, DistortionStateFactory_getFactory },
-    { EffectSlotType::Echo, EchoStateFactory_getFactory },
-    { EffectSlotType::Equalizer, EqualizerStateFactory_getFactory },
-    { EffectSlotType::Flanger, FlangerStateFactory_getFactory },
-    { EffectSlotType::FrequencyShifter, FshifterStateFactory_getFactory },
-    { EffectSlotType::RingModulator, ModulatorStateFactory_getFactory },
-    { EffectSlotType::PitchShifter, PshifterStateFactory_getFactory },
-    { EffectSlotType::VocalMorpher, VmorpherStateFactory_getFactory },
-    { EffectSlotType::DedicatedDialog, DedicatedStateFactory_getFactory },
-    { EffectSlotType::DedicatedLFE, DedicatedStateFactory_getFactory },
-    { EffectSlotType::Convolution, ConvolutionStateFactory_getFactory },
+constexpr std::array FactoryList{
+    FactoryItem{EffectSlotType::None, NullStateFactory_getFactory},
+    FactoryItem{EffectSlotType::EAXReverb, ReverbStateFactory_getFactory},
+    FactoryItem{EffectSlotType::Reverb, StdReverbStateFactory_getFactory},
+    FactoryItem{EffectSlotType::Autowah, AutowahStateFactory_getFactory},
+    FactoryItem{EffectSlotType::Chorus, ChorusStateFactory_getFactory},
+    FactoryItem{EffectSlotType::Compressor, CompressorStateFactory_getFactory},
+    FactoryItem{EffectSlotType::Distortion, DistortionStateFactory_getFactory},
+    FactoryItem{EffectSlotType::Echo, EchoStateFactory_getFactory},
+    FactoryItem{EffectSlotType::Equalizer, EqualizerStateFactory_getFactory},
+    FactoryItem{EffectSlotType::Flanger, FlangerStateFactory_getFactory},
+    FactoryItem{EffectSlotType::FrequencyShifter, FshifterStateFactory_getFactory},
+    FactoryItem{EffectSlotType::RingModulator, ModulatorStateFactory_getFactory},
+    FactoryItem{EffectSlotType::PitchShifter, PshifterStateFactory_getFactory},
+    FactoryItem{EffectSlotType::VocalMorpher, VmorpherStateFactory_getFactory},
+    FactoryItem{EffectSlotType::DedicatedDialog, DedicatedStateFactory_getFactory},
+    FactoryItem{EffectSlotType::DedicatedLFE, DedicatedStateFactory_getFactory},
+    FactoryItem{EffectSlotType::Convolution, ConvolutionStateFactory_getFactory},
 };
 
 EffectStateFactory *getFactoryByType(EffectSlotType type)
 {
-    auto iter = std::find_if(std::begin(FactoryList), std::end(FactoryList),
+    auto iter = std::find_if(FactoryList.begin(), FactoryList.end(),
         [type](const FactoryItem &item) noexcept -> bool
         { return item.Type == type; });
     return (iter != std::end(FactoryList)) ? iter->GetFactory() : nullptr;
@@ -164,7 +164,7 @@ void AddActiveEffectSlots(const al::span<ALeffectslot*> auxslots, ALCcontext *co
     std::uninitialized_fill_n(newarray->end(), newcount, nullptr);
 
     curarray = context->mActiveAuxSlots.exchange(newarray, std::memory_order_acq_rel);
-    context->mDevice->waitForMix();
+    std::ignore = context->mDevice->waitForMix();
 
     std::destroy_n(curarray->end(), curarray->size());
     delete curarray;
@@ -203,7 +203,7 @@ void RemoveActiveEffectSlots(const al::span<ALeffectslot*> auxslots, ALCcontext 
     std::uninitialized_fill_n(newarray->end(), newsize, nullptr);
 
     curarray = context->mActiveAuxSlots.exchange(newarray, std::memory_order_acq_rel);
-    context->mDevice->waitForMix();
+    std::ignore = context->mDevice->waitForMix();
 
     std::destroy_n(curarray->end(), curarray->size());
     delete curarray;
@@ -370,7 +370,7 @@ FORCE_ALIGN void AL_APIENTRY alDeleteAuxiliaryEffectSlotsDirect(ALCcontext *cont
             context->setError(AL_INVALID_NAME, "Invalid effect slot ID %u", effectslots[0]);
             return;
         }
-        if(ReadRef(slot->ref) != 0) UNLIKELY
+        if(slot->ref.load(std::memory_order_relaxed) != 0) UNLIKELY
         {
             context->setError(AL_INVALID_OPERATION, "Deleting in-use effect slot %u",
                 effectslots[0]);
@@ -390,7 +390,7 @@ FORCE_ALIGN void AL_APIENTRY alDeleteAuxiliaryEffectSlotsDirect(ALCcontext *cont
                 context->setError(AL_INVALID_NAME, "Invalid effect slot ID %u", effectslots[i]);
                 return;
             }
-            if(ReadRef(slot->ref) != 0) UNLIKELY
+            if(slot->ref.load(std::memory_order_relaxed) != 0) UNLIKELY
             {
                 context->setError(AL_INVALID_OPERATION, "Deleting in-use effect slot %u",
                     effectslots[i]);
@@ -1530,7 +1530,8 @@ void eax_delete_al_effect_slot(ALCcontext& context, ALeffectslot& effect_slot)
 
     std::lock_guard<std::mutex> effect_slot_lock{context.mEffectSlotLock};
 
-    if(ReadRef(effect_slot.ref) != 0) {
+    if(effect_slot.ref.load(std::memory_order_relaxed) != 0)
+    {
         ERR(EAX_PREFIX "Deleting in-use effect slot %u.\n", effect_slot.id);
         return;
     }

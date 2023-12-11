@@ -2,6 +2,7 @@
 #include "config.h"
 
 #include <cassert>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -85,64 +86,72 @@ ContextBase::~ContextBase()
 
 void ContextBase::allocVoiceChanges()
 {
-    constexpr size_t clustersize{128};
+    static constexpr size_t clustersize{std::tuple_size_v<VoiceChangeCluster::element_type>};
 
-    VoiceChangeCluster cluster{std::make_unique<VoiceChange[]>(clustersize)};
+    VoiceChangeCluster clusterptr{std::make_unique<VoiceChangeCluster::element_type>()};
+    const auto cluster = al::span{*clusterptr};
+
     for(size_t i{1};i < clustersize;++i)
         cluster[i-1].mNext.store(std::addressof(cluster[i]), std::memory_order_relaxed);
     cluster[clustersize-1].mNext.store(mVoiceChangeTail, std::memory_order_relaxed);
 
-    mVoiceChangeClusters.emplace_back(std::move(cluster));
-    mVoiceChangeTail = mVoiceChangeClusters.back().get();
+    mVoiceChangeClusters.emplace_back(std::move(clusterptr));
+    mVoiceChangeTail = mVoiceChangeClusters.back()->data();
 }
 
 void ContextBase::allocVoiceProps()
 {
-    constexpr size_t clustersize{32};
+    static constexpr size_t clustersize{std::tuple_size_v<VoicePropsCluster::element_type>};
 
     TRACE("Increasing allocated voice properties to %zu\n",
         (mVoicePropClusters.size()+1) * clustersize);
 
-    VoicePropsCluster cluster{std::make_unique<VoicePropsItem[]>(clustersize)};
+    auto clusterptr = std::make_unique<VoicePropsCluster::element_type>();
+    auto cluster = al::span{*clusterptr};
     for(size_t i{1};i < clustersize;++i)
         cluster[i-1].next.store(std::addressof(cluster[i]), std::memory_order_relaxed);
-    mVoicePropClusters.emplace_back(std::move(cluster));
+    mVoicePropClusters.emplace_back(std::move(clusterptr));
 
     VoicePropsItem *oldhead{mFreeVoiceProps.load(std::memory_order_acquire)};
     do {
-        mVoicePropClusters.back()[clustersize-1].next.store(oldhead, std::memory_order_relaxed);
-    } while(mFreeVoiceProps.compare_exchange_weak(oldhead, mVoicePropClusters.back().get(),
+        mVoicePropClusters.back()->back().next.store(oldhead, std::memory_order_relaxed);
+    } while(mFreeVoiceProps.compare_exchange_weak(oldhead, mVoicePropClusters.back()->data(),
         std::memory_order_acq_rel, std::memory_order_acquire) == false);
 }
 
 void ContextBase::allocVoices(size_t addcount)
 {
-    constexpr size_t clustersize{32};
+    static constexpr size_t clustersize{std::tuple_size_v<VoiceCluster::element_type>};
     /* Convert element count to cluster count. */
     addcount = (addcount+(clustersize-1)) / clustersize;
+
+    if(!addcount)
+    {
+        if(!mVoiceClusters.empty())
+            return;
+        ++addcount;
+    }
 
     if(addcount >= std::numeric_limits<int>::max()/clustersize - mVoiceClusters.size())
         throw std::runtime_error{"Allocating too many voices"};
     const size_t totalcount{(mVoiceClusters.size()+addcount) * clustersize};
     TRACE("Increasing allocated voices to %zu\n", totalcount);
 
-    auto newarray = VoiceArray::Create(totalcount);
     while(addcount)
     {
-        mVoiceClusters.emplace_back(std::make_unique<Voice[]>(clustersize));
+        mVoiceClusters.emplace_back(std::make_unique<VoiceCluster::element_type>());
         --addcount;
     }
 
+    auto newarray = VoiceArray::Create(totalcount);
     auto voice_iter = newarray->begin();
     for(VoiceCluster &cluster : mVoiceClusters)
-    {
-        for(size_t i{0};i < clustersize;++i)
-            *(voice_iter++) = &cluster[i];
-    }
+        voice_iter = std::transform(cluster->begin(), cluster->end(), voice_iter,
+            [](Voice &voice) noexcept -> Voice* { return &voice; });
 
     if(auto *oldvoices = mVoices.exchange(newarray.release(), std::memory_order_acq_rel))
     {
-        mDevice->waitForMix();
+        std::ignore = mDevice->waitForMix();
         delete oldvoices;
     }
 }
@@ -150,20 +159,20 @@ void ContextBase::allocVoices(size_t addcount)
 
 EffectSlot *ContextBase::getEffectSlot()
 {
-    for(auto& cluster : mEffectSlotClusters)
+    for(auto& clusterptr : mEffectSlotClusters)
     {
-        for(size_t i{0};i < EffectSlotClusterSize;++i)
-        {
-            if(!cluster[i].InUse)
-                return &cluster[i];
-        }
+        const auto cluster = al::span{*clusterptr};
+        auto iter = std::find_if_not(cluster.begin(), cluster.end(),
+            std::mem_fn(&EffectSlot::InUse));
+        if(iter != cluster.end()) return al::to_address(iter);
     }
 
-    if(1 >= std::numeric_limits<int>::max()/EffectSlotClusterSize - mEffectSlotClusters.size())
+    auto clusterptr = std::make_unique<EffectSlotCluster::element_type>();
+    if(1 >= std::numeric_limits<int>::max()/clusterptr->size() - mEffectSlotClusters.size())
         throw std::runtime_error{"Allocating too many effect slots"};
-    const size_t totalcount{(mEffectSlotClusters.size()+1) * EffectSlotClusterSize};
+    const size_t totalcount{(mEffectSlotClusters.size()+1) * clusterptr->size()};
     TRACE("Increasing allocated effect slots to %zu\n", totalcount);
 
-    mEffectSlotClusters.emplace_back(std::make_unique<EffectSlot[]>(EffectSlotClusterSize));
-    return getEffectSlot();
+    mEffectSlotClusters.emplace_back(std::move(clusterptr));
+    return mEffectSlotClusters.back()->data();
 }

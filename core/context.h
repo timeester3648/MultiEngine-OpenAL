@@ -14,6 +14,7 @@
 #include "alspan.h"
 #include "async_event.h"
 #include "atomic.h"
+#include "flexarray.h"
 #include "opthelpers.h"
 #include "vecmat.h"
 
@@ -85,7 +86,7 @@ struct ContextBase {
     /* Counter for the pre-mixing updates, in 31.1 fixed point (lowest bit
      * indicates if updates are currently happening).
      */
-    RefCount mUpdateCount{0u};
+    std::atomic<unsigned int> mUpdateCount{0u};
     std::atomic<bool> mHoldUpdates{false};
     std::atomic<bool> mStopVoicesOnDisconnect{true};
 
@@ -117,12 +118,12 @@ struct ContextBase {
     std::atomic<size_t> mActiveVoiceCount{};
 
     void allocVoices(size_t addcount);
-    al::span<Voice*> getVoicesSpan() const noexcept
+    [[nodiscard]] auto getVoicesSpan() const noexcept -> al::span<Voice*>
     {
         return {mVoices.load(std::memory_order_relaxed)->data(),
             mActiveVoiceCount.load(std::memory_order_relaxed)};
     }
-    al::span<Voice*> getVoicesSpanAcquired() const noexcept
+    [[nodiscard]] auto getVoicesSpanAcquired() const noexcept -> al::span<Voice*>
     {
         return {mVoices.load(std::memory_order_acquire)->data(),
             mActiveVoiceCount.load(std::memory_order_acquire)};
@@ -143,20 +144,19 @@ struct ContextBase {
      * However, to avoid allocating each object individually, they're allocated
      * in clusters that are stored in a vector for easy automatic cleanup.
      */
-    using VoiceChangeCluster = std::unique_ptr<VoiceChange[]>;
+    using VoiceChangeCluster = std::unique_ptr<std::array<VoiceChange,128>>;
     std::vector<VoiceChangeCluster> mVoiceChangeClusters;
 
-    using VoiceCluster = std::unique_ptr<Voice[]>;
+    using VoiceCluster = std::unique_ptr<std::array<Voice,32>>;
     std::vector<VoiceCluster> mVoiceClusters;
 
-    using VoicePropsCluster = std::unique_ptr<VoicePropsItem[]>;
+    using VoicePropsCluster = std::unique_ptr<std::array<VoicePropsItem,32>>;
     std::vector<VoicePropsCluster> mVoicePropClusters;
 
 
-    static constexpr size_t EffectSlotClusterSize{4};
     EffectSlot *getEffectSlot();
 
-    using EffectSlotCluster = std::unique_ptr<EffectSlot[]>;
+    using EffectSlotCluster = std::unique_ptr<std::array<EffectSlot,4>>;
     std::vector<EffectSlotCluster> mEffectSlotClusters;
 
 

@@ -41,7 +41,6 @@
 
 #include "albit.h"
 #include "alc/alconfig.h"
-#include "alc/events.h"
 #include "almalloc.h"
 #include "alnumeric.h"
 #include "alspan.h"
@@ -1035,7 +1034,7 @@ ClockLatency PulsePlayback::getClockLatency()
 
     {
         MainloopUniqueLock plock{mMainloop};
-        ret.ClockTime = GetDeviceClockTime(mDevice);
+        ret.ClockTime = mDevice->getClockTime();
         err = pa_stream_get_latency(mStream, &latency, &neg);
     }
 
@@ -1363,7 +1362,7 @@ ClockLatency PulseCapture::getClockLatency()
 
     {
         MainloopUniqueLock plock{mMainloop};
-        ret.ClockTime = GetDeviceClockTime(mDevice);
+        ret.ClockTime = mDevice->getClockTime();
         err = pa_stream_get_latency(mStream, &latency, &neg);
     }
 
@@ -1490,4 +1489,19 @@ BackendFactory &PulseBackendFactory::getFactory()
 {
     static PulseBackendFactory factory{};
     return factory;
+}
+
+alc::EventSupport PulseBackendFactory::queryEventSupport(alc::EventType eventType, BackendType)
+{
+    switch(eventType)
+    {
+    case alc::EventType::DeviceAdded:
+    case alc::EventType::DeviceRemoved:
+        return alc::EventSupport::FullSupport;
+
+    case alc::EventType::DefaultDeviceChanged:
+    case alc::EventType::Count:
+        break;
+    }
+    return alc::EventSupport::NoSupport;
 }

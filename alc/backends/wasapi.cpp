@@ -60,7 +60,6 @@
 
 #include "albit.h"
 #include "alc/alconfig.h"
-#include "alc/events.h"
 #include "alnumeric.h"
 #include "alspan.h"
 #include "althrd_setname.h"
@@ -2073,7 +2072,7 @@ ClockLatency WasapiPlayback::getClockLatency()
     ClockLatency ret;
 
     std::lock_guard<std::mutex> _{mMutex};
-    ret.ClockTime = GetDeviceClockTime(mDevice);
+    ret.ClockTime = mDevice->getClockTime();
     ret.Latency  = seconds{mPadding.load(std::memory_order_relaxed)};
     ret.Latency /= mFormat.Format.nSamplesPerSec;
     if(mResampler)
@@ -2652,7 +2651,7 @@ void WasapiCapture::stopProxy()
 
 
 void WasapiCapture::captureSamples(std::byte *buffer, uint samples)
-{ mRing->read(buffer, samples); }
+{ std::ignore = mRing->read(buffer, samples); }
 
 uint WasapiCapture::availableSamples()
 { return static_cast<uint>(mRing->readSpace()); }
@@ -2740,4 +2739,23 @@ BackendFactory &WasapiBackendFactory::getFactory()
 {
     static WasapiBackendFactory factory{};
     return factory;
+}
+
+alc::EventSupport WasapiBackendFactory::queryEventSupport(alc::EventType eventType, BackendType)
+{
+    switch(eventType)
+    {
+    case alc::EventType::DefaultDeviceChanged:
+        return alc::EventSupport::FullSupport;
+
+    case alc::EventType::DeviceAdded:
+    case alc::EventType::DeviceRemoved:
+#if !defined(ALSOFT_UWP)
+        return alc::EventSupport::FullSupport;
+#endif
+
+    case alc::EventType::Count:
+        break;
+    }
+    return alc::EventSupport::NoSupport;
 }

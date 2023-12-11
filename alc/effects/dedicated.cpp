@@ -47,8 +47,8 @@ struct DedicatedState final : public EffectState {
      * gains for all possible output channels and not just the main ambisonic
      * buffer.
      */
-    float mCurrentGains[MAX_OUTPUT_CHANNELS];
-    float mTargetGains[MAX_OUTPUT_CHANNELS];
+    std::array<float,MaxOutputChannels> mCurrentGains;
+    std::array<float,MaxOutputChannels> mTargetGains;
 
 
     void deviceUpdate(const DeviceBase *device, const BufferStorage *buffer) override;
@@ -74,7 +74,7 @@ void DedicatedState::update(const ContextBase*, const EffectSlot *slot,
 
     if(slot->EffectType == EffectSlotType::DedicatedLFE)
     {
-        const uint idx{target.RealOut ? target.RealOut->ChannelIndex[LFE] : InvalidChannelIndex};
+        const size_t idx{target.RealOut ? target.RealOut->ChannelIndex[LFE] : InvalidChannelIndex};
         if(idx != InvalidChannelIndex)
         {
             mOutTarget = target.RealOut->Buffer;
@@ -85,7 +85,7 @@ void DedicatedState::update(const ContextBase*, const EffectSlot *slot,
     {
         /* Dialog goes to the front-center speaker if it exists, otherwise it
          * plays from the front-center location. */
-        const uint idx{target.RealOut ? target.RealOut->ChannelIndex[FrontCenter]
+        const size_t idx{target.RealOut ? target.RealOut->ChannelIndex[FrontCenter]
             : InvalidChannelIndex};
         if(idx != InvalidChannelIndex)
         {
@@ -97,15 +97,15 @@ void DedicatedState::update(const ContextBase*, const EffectSlot *slot,
             static constexpr auto coeffs = CalcDirectionCoeffs(std::array{0.0f, 0.0f, -1.0f});
 
             mOutTarget = target.Main->Buffer;
-            ComputePanGains(target.Main, coeffs.data(), Gain, mTargetGains);
+            ComputePanGains(target.Main, coeffs, Gain, mTargetGains);
         }
     }
 }
 
 void DedicatedState::process(const size_t samplesToDo, const al::span<const FloatBufferLine> samplesIn, const al::span<FloatBufferLine> samplesOut)
 {
-    MixSamples({samplesIn[0].data(), samplesToDo}, samplesOut, mCurrentGains, mTargetGains,
-        samplesToDo, 0);
+    MixSamples({samplesIn[0].data(), samplesToDo}, samplesOut, mCurrentGains.data(),
+        mTargetGains.data(), samplesToDo, 0);
 }
 
 

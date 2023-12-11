@@ -39,7 +39,8 @@
 
 namespace {
 
-constexpr char pa_device[] = "PortAudio Default";
+/* NOLINTNEXTLINE(*-avoid-c-arrays) */
+constexpr char pa_device[]{"PortAudio Default"};
 
 
 #ifdef HAVE_DYNLOAD
@@ -271,7 +272,7 @@ PortCapture::~PortCapture()
 int PortCapture::readCallback(const void *inputBuffer, void*, unsigned long framesPerBuffer,
     const PaStreamCallbackTimeInfo*, const PaStreamCallbackFlags) noexcept
 {
-    mRing->write(inputBuffer, framesPerBuffer);
+    std::ignore = mRing->write(inputBuffer, framesPerBuffer);
     return 0;
 }
 
@@ -350,7 +351,7 @@ uint PortCapture::availableSamples()
 { return static_cast<uint>(mRing->readSpace()); }
 
 void PortCapture::captureSamples(std::byte *buffer, uint samples)
-{ mRing->read(buffer, samples); }
+{ std::ignore = mRing->read(buffer, samples); }
 
 } // namespace
 

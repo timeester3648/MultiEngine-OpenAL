@@ -5,11 +5,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <functional>
 #include <limits>
 #include <numeric>
-#include <stddef.h>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -32,6 +32,7 @@
 #include "core/voice.h"
 #include "core/voice_change.h"
 #include "device.h"
+#include "flexarray.h"
 #include "ringbuffer.h"
 #include "vecmat.h"
 
@@ -276,7 +277,7 @@ bool ALCcontext::deinit()
         mDevice->mContexts.store(newarray);
         if(oldarray != &DeviceBase::sEmptyContextArray)
         {
-            mDevice->waitForMix();
+            std::ignore = mDevice->waitForMix();
             delete oldarray;
         }
 

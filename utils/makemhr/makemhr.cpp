@@ -297,10 +297,7 @@ static void MinimumPhase(const uint n, double *mags, complex_d *out)
     // Remove any DC offset the filter has.
     mags[0] = EPSILON;
     for(i = 0;i < n;i++)
-    {
-        auto a = std::exp(complex_d{0.0, out[i].imag()});
-        out[i] = a * mags[i];
-    }
+        out[i] = std::polar(mags[i], out[i].imag());
 }
 
 
@@ -327,13 +324,11 @@ static int WriteAscii(const char *out, FILE *fp, const char *filename)
 // loading it from a 32-bit unsigned integer.
 static int WriteBin4(const uint bytes, const uint32_t in, FILE *fp, const char *filename)
 {
-    uint8_t out[4];
-    uint i;
-
-    for(i = 0;i < bytes;i++)
+    std::array<uint8_t,4> out{};
+    for(uint i{0};i < bytes;i++)
         out[i] = (in>>(i*8)) & 0x000000FF;
 
-    if(fwrite(out, 1, bytes, fp) != bytes)
+    if(fwrite(out.data(), 1, bytes, fp) != bytes)
     {
         fprintf(stderr, "\nError: Bad write to file '%s'.\n", filename);
         return 0;
@@ -390,11 +385,11 @@ static int StoreMhr(const HrirDataT *hData, const char *filename)
             for(ai = 0;ai < hData->mFds[fi].mEvs[ei].mAzs.size();ai++)
             {
                 HrirAzT *azd = &hData->mFds[fi].mEvs[ei].mAzs[ai];
-                double out[2 * MAX_TRUNCSIZE];
+                std::array<double,2*MAX_TRUNCSIZE> out{};
 
-                TpdfDither(out, azd->mIrs[0], scale, n, channels, &dither_seed);
+                TpdfDither(out.data(), azd->mIrs[0], scale, n, channels, &dither_seed);
                 if(hData->mChannelType == CT_STEREO)
-                    TpdfDither(out+1, azd->mIrs[1], scale, n, channels, &dither_seed);
+                    TpdfDither(out.data()+1, azd->mIrs[1], scale, n, channels, &dither_seed);
                 for(i = 0;i < (channels * n);i++)
                 {
                     const auto v = static_cast<int>(Clamp(out[i], -scale-1.0, scale));
@@ -437,21 +432,18 @@ static int StoreMhr(const HrirDataT *hData, const char *filename)
  */
 static void BalanceFieldMagnitudes(const HrirDataT *hData, const uint channels, const uint m)
 {
-    double maxMags[MAX_FD_COUNT];
-    uint fi, ei, ti, i;
-
+    std::array<double,MAX_FD_COUNT> maxMags{};
     double maxMag{0.0};
-    for(fi = 0;fi < hData->mFds.size();fi++)
-    {
-        maxMags[fi] = 0.0;
 
-        for(ei = hData->mFds[fi].mEvStart;ei < hData->mFds[fi].mEvs.size();ei++)
+    for(size_t fi{0};fi < hData->mFds.size();++fi)
+    {
+        for(size_t ei{hData->mFds[fi].mEvStart};ei < hData->mFds[fi].mEvs.size();++ei)
         {
             for(const auto &azd : hData->mFds[fi].mEvs[ei].mAzs)
             {
-                for(ti = 0;ti < channels;ti++)
+                for(size_t ti{0};ti < channels;++ti)
                 {
-                    for(i = 0;i < m;i++)
+                    for(size_t i{0};i < m;++i)
                         maxMags[fi] = std::max(azd.mIrs[ti][i], maxMags[fi]);
                 }
             }
@@ -460,17 +452,17 @@ static void BalanceFieldMagnitudes(const HrirDataT *hData, const uint channels, 
         maxMag = std::max(maxMags[fi], maxMag);
     }
 
-    for(fi = 0;fi < hData->mFds.size();fi++)
+    for(size_t fi{0};fi < hData->mFds.size();++fi)
     {
         const double magFactor{maxMag / maxMags[fi]};
 
-        for(ei = hData->mFds[fi].mEvStart;ei < hData->mFds[fi].mEvs.size();ei++)
+        for(size_t ei{hData->mFds[fi].mEvStart};ei < hData->mFds[fi].mEvs.size();++ei)
         {
             for(const auto &azd : hData->mFds[fi].mEvs[ei].mAzs)
             {
-                for(ti = 0;ti < channels;ti++)
+                for(size_t ti{0};ti < channels;++ti)
                 {
-                    for(i = 0;i < m;i++)
+                    for(size_t i{0};i < m;++i)
                         azd.mIrs[ti][i] *= magFactor;
                 }
             }
@@ -738,12 +730,12 @@ static void SynthesizeOnsets(HrirDataT *hData)
                 double az{field.mEvs[ei].mAzs[ai].mAzimuth};
                 CalcAzIndices(field, upperElevReal, az, &a0, &a1, &af0);
                 CalcAzIndices(field, lowerElevFake, az, &a2, &a3, &af1);
-                double blend[4]{
+                std::array<double,4> blend{{
                     (1.0-ef) * (1.0-af0),
                     (1.0-ef) * (    af0),
                     (    ef) * (1.0-af1),
                     (    ef) * (    af1)
-                };
+                }};
 
                 for(uint ti{0u};ti < channels;ti++)
                 {
@@ -800,7 +792,7 @@ static void SynthesizeHrirs(HrirDataT *hData)
         {
             const double of{static_cast<double>(ei) / field.mEvStart};
             const double b{(1.0 - of) * beta};
-            double lp[4]{};
+            std::array<double,4> lp{};
 
             /* Calculate a low-pass filter to simulate body occlusion. */
             lp[0] = Lerp(1.0, lp[0], b);
@@ -845,7 +837,7 @@ static void SynthesizeHrirs(HrirDataT *hData)
             }
         }
         const double b{beta};
-        double lp[4]{};
+        std::array<double,4> lp{};
         lp[0] = Lerp(1.0, lp[0], b);
         lp[1] = Lerp(lp[0], lp[1], b);
         lp[2] = Lerp(lp[1], lp[2], b);
@@ -891,7 +883,7 @@ struct HrirReconstructor {
         auto mags = std::vector<double>(mFftSize);
         size_t m{(mFftSize/2) + 1};
 
-        while(1)
+        while(true)
         {
             /* Load the current index to process. */
             size_t idx{mCurrent.load()};
@@ -994,7 +986,7 @@ static void NormalizeHrirs(HrirDataT *hData)
         return LevelPair{std::max(current.amp, levels.amp), std::max(current.rms, levels.rms)};
     };
     auto measure_azi = [channels,mesasure_channel](const LevelPair levels, const HrirAzT &azi)
-    { return std::accumulate(azi.mIrs, azi.mIrs+channels, levels, mesasure_channel); };
+    { return std::accumulate(azi.mIrs.begin(), azi.mIrs.begin()+channels, levels, mesasure_channel); };
     auto measure_elev = [measure_azi](const LevelPair levels, const HrirEvT &elev)
     { return std::accumulate(elev.mAzs.cbegin(), elev.mAzs.cend(), levels, measure_azi); };
     auto measure_field = [measure_elev](const LevelPair levels, const HrirFdT &field)
@@ -1021,7 +1013,7 @@ static void NormalizeHrirs(HrirDataT *hData)
     auto proc_channel = [irSize,factor](double *ir)
     { std::transform(ir, ir+irSize, ir, [factor](double s){ return s * factor; }); };
     auto proc_azi = [channels,proc_channel](HrirAzT &azi)
-    { std::for_each(azi.mIrs, azi.mIrs+channels, proc_channel); };
+    { std::for_each(azi.mIrs.begin(), azi.mIrs.begin()+channels, proc_channel); };
     auto proc_elev = [proc_azi](HrirEvT &elev)
     { std::for_each(elev.mAzs.begin(), elev.mAzs.end(), proc_azi); };
     auto proc1_field = [proc_elev](HrirFdT &field)
@@ -1202,10 +1194,10 @@ static int ProcessDefinition(const char *inName, const uint outRate, const Chann
             return 0;
         }
 
-        char startbytes[4]{};
-        input->read(startbytes, sizeof(startbytes));
+        std::array<char,4> startbytes{};
+        input->read(startbytes.data(), startbytes.size());
         std::streamsize startbytecount{input->gcount()};
-        if(startbytecount != sizeof(startbytes) || !input->good())
+        if(startbytecount != startbytes.size() || !input->good())
         {
             fprintf(stderr, "Error: Could not read input file '%s'\n", inName);
             return 0;
@@ -1222,7 +1214,8 @@ static int ProcessDefinition(const char *inName, const uint outRate, const Chann
         else
         {
             fprintf(stdout, "Reading HRIR definition from %s...\n", inName);
-            if(!LoadDefInput(*input, startbytes, startbytecount, inName, fftSize, truncSize, outRate, chanMode, &hData))
+            if(!LoadDefInput(*input, startbytes.data(), startbytecount, inName, fftSize, truncSize,
+                outRate, chanMode, &hData))
                 return 0;
         }
     }
