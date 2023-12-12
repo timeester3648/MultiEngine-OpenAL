@@ -1,7 +1,7 @@
 include "../../premake/common_premake_defines.lua"
 
 project "OpenAL"
-	kind "StaticLib"
+	kind "SharedLib"
 	language "C++"
 	cppdialect "C++latest"
 	cdialect "C17"
@@ -41,10 +41,11 @@ project "OpenAL"
 	}
 
 	filter "toolset:msc"
-		disablewarnings { "5030", "4065", "4834", "4267", "4067", "4244", "4018" }
+		disablewarnings { "5030", "4065", "4834", "4267", "4067", "4244", "4018", "4804" }
 
  	filter "system:windows"
-		defines { "AL_ALEXT_PROTOTYPES", "AL_BUILD_LIBRARY", "RESTRICT=__restrict", "_CRT_SECURE_NO_WARNINGS" }
+		links { "Winmm" }
+		defines { "AL_ALEXT_PROTOTYPES", "RESTRICT=__restrict", "_CRT_SECURE_NO_WARNINGS", "AL_API=__declspec(dllexport)", "ALC_API=__declspec(dllexport)" }
 		excludes { "./core/rtkit.cpp",
 				   "./core/dbus_wrap.cpp",
 				   "./core/mixer/mixer_neon.cpp",
