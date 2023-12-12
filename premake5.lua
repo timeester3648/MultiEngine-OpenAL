@@ -37,7 +37,6 @@ project "OpenAL"
 	}
 
 	defines {
-		"AL_LIBTYPE_STATIC",
 		"HAVE_SSE_INTRINSICS=(INTRINSICS_LEVEL_SSE != 0)"
 	}
 
