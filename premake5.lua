@@ -9,6 +9,7 @@ project "OpenAL"
 	inlining "Auto"
 
 	includedirs {
+		-- Note: not separate static needed, since only defines are used
 		"%{IncludeDir.mle}",
 		"%{IncludeDir.intrinsics}",
 
