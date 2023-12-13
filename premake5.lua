@@ -7,6 +7,7 @@ project "OpenAL"
 	cdialect "C17"
 	targetname "%{prj.name}"
 	inlining "Auto"
+	tags { "use_header_only_mle" }
 
 	includedirs {
 		-- Note: not separate static needed, since only defines are used
