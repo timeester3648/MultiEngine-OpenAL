@@ -10,7 +10,6 @@ project "OpenAL"
 	tags { "use_header_only_mle" }
 
 	includedirs {
-		-- Note: not separate static needed, since only defines are used
 		"%{IncludeDir.mle}",
 		"%{IncludeDir.intrinsics}",
 
@@ -46,7 +45,6 @@ project "OpenAL"
 		disablewarnings { "5030", "4065", "4834", "4267", "4067", "4244", "4018", "4804" }
 
  	filter "system:windows"
-		links { "Winmm" }
 		defines { "AL_ALEXT_PROTOTYPES", "RESTRICT=__restrict", "_CRT_SECURE_NO_WARNINGS", "AL_API=__declspec(dllexport)", "ALC_API=__declspec(dllexport)" }
 		excludes { "./core/rtkit.cpp",
 				   "./core/dbus_wrap.cpp",
