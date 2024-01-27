@@ -48,7 +48,7 @@ void DirectorySearch(const std::string_view path, const std::string_view ext,
     TRACE("Searching %.*s for *%.*s\n", as_int(path.size()), path.data(), as_int(ext.size()),
         ext.data());
     try {
-        for(auto&& dirent : std::filesystem::directory_iterator{std::filesystem::u8path(path)})
+        for(auto&& dirent : std::filesystem::directory_iterator{std::filesystem::path(path)})
         {
             auto&& entrypath = dirent.path();
             if(!entrypath.has_extension())
@@ -56,8 +56,8 @@ void DirectorySearch(const std::string_view path, const std::string_view ext,
 
             const auto status = std::filesystem::status(entrypath);
             if(status.type() == std::filesystem::file_type::regular
-                && al::case_compare(entrypath.extension().u8string(), ext) == 0)
-                results->emplace_back(entrypath.u8string());
+                && al::case_compare(entrypath.extension().string(), ext) == 0)
+                results->emplace_back(entrypath.string());
         }
     }
     catch(std::filesystem::filesystem_error &fe) {
@@ -144,9 +144,9 @@ std::vector<std::string> SearchDataFiles(const char *ext, const char *subdir)
     /* If the path is absolute, use it directly. */
     std::vector<std::string> results;
     try {
-        if(auto fpath = std::filesystem::u8path(subdir); fpath.is_absolute())
+        if(auto fpath = std::filesystem::path(subdir); fpath.is_absolute())
         {
-            std::string path{fpath.make_preferred().u8string()};
+            std::string path{fpath.make_preferred().string()};
             DirectorySearch(path, ext, &results);
             return results;
         }
@@ -169,7 +169,7 @@ std::vector<std::string> SearchDataFiles(const char *ext, const char *subdir)
         if(path.back() == '\\') path.pop_back();
     }
     else if(auto curpath = std::filesystem::current_path(); !curpath.empty())
-        path = curpath.make_preferred().u8string();
+        path = curpath.make_preferred().string();
     if(!path.empty())
         DirectorySearch(path, ext, &results);
 
