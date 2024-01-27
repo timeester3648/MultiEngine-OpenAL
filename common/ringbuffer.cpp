@@ -29,6 +29,7 @@
 #include <stdexcept>
 
 #include "almalloc.h"
+#include "alnumeric.h"
 
 
 RingBufferPtr RingBuffer::Create(std::size_t sz, std::size_t elem_sz, int limit_writes)
@@ -42,7 +43,7 @@ RingBufferPtr RingBuffer::Create(std::size_t sz, std::size_t elem_sz, int limit_
         power_of_two |= power_of_two>>4;
         power_of_two |= power_of_two>>8;
         power_of_two |= power_of_two>>16;
-        if constexpr(std::numeric_limits<size_t>::max() > std::numeric_limits<int32_t>::max())
+        if constexpr(sizeof(size_t) > sizeof(uint32_t))
             power_of_two |= power_of_two>>32;
     }
     ++power_of_two;
@@ -74,18 +75,9 @@ std::size_t RingBuffer::read(void *dest, std::size_t cnt) noexcept
     const std::size_t to_read{std::min(cnt, free_cnt)};
     std::size_t read_ptr{mReadPtr.load(std::memory_order_relaxed) & mSizeMask};
 
-    std::size_t n1, n2;
     const std::size_t cnt2{read_ptr + to_read};
-    if(cnt2 > mSizeMask+1)
-    {
-        n1 = mSizeMask+1 - read_ptr;
-        n2 = cnt2 & mSizeMask;
-    }
-    else
-    {
-        n1 = to_read;
-        n2 = 0;
-    }
+    const auto [n1, n2] = (cnt2 <= mSizeMask+1) ? std::make_tuple(to_read, 0_uz)
+        : std::make_tuple(mSizeMask+1 - read_ptr, cnt2&mSizeMask);
 
     auto outiter = std::copy_n(mBuffer.begin() + read_ptr*mElemSize, n1*mElemSize,
         static_cast<std::byte*>(dest));
@@ -107,18 +99,9 @@ std::size_t RingBuffer::peek(void *dest, std::size_t cnt) const noexcept
     const std::size_t to_read{std::min(cnt, free_cnt)};
     std::size_t read_ptr{mReadPtr.load(std::memory_order_relaxed) & mSizeMask};
 
-    std::size_t n1, n2;
     const std::size_t cnt2{read_ptr + to_read};
-    if(cnt2 > mSizeMask+1)
-    {
-        n1 = mSizeMask+1 - read_ptr;
-        n2 = cnt2 & mSizeMask;
-    }
-    else
-    {
-        n1 = to_read;
-        n2 = 0;
-    }
+    const auto [n1, n2] = (cnt2 <= mSizeMask+1) ? std::make_tuple(to_read, 0_uz)
+        : std::make_tuple(mSizeMask+1 - read_ptr, cnt2&mSizeMask);
 
     auto outiter = std::copy_n(mBuffer.begin() + read_ptr*mElemSize, n1*mElemSize,
         static_cast<std::byte*>(dest));
@@ -135,18 +118,9 @@ std::size_t RingBuffer::write(const void *src, std::size_t cnt) noexcept
     const std::size_t to_write{std::min(cnt, free_cnt)};
     std::size_t write_ptr{mWritePtr.load(std::memory_order_relaxed) & mSizeMask};
 
-    std::size_t n1, n2;
     const std::size_t cnt2{write_ptr + to_write};
-    if(cnt2 > mSizeMask+1)
-    {
-        n1 = mSizeMask+1 - write_ptr;
-        n2 = cnt2 & mSizeMask;
-    }
-    else
-    {
-        n1 = to_write;
-        n2 = 0;
-    }
+    const auto [n1, n2] = (cnt2 <= mSizeMask+1) ? std::make_tuple(to_write, 0_uz)
+        : std::make_tuple(mSizeMask+1 - write_ptr, cnt2&mSizeMask);
 
     auto srcbytes = static_cast<const std::byte*>(src);
     std::copy_n(srcbytes, n1*mElemSize, mBuffer.begin() + write_ptr*mElemSize);
@@ -161,7 +135,7 @@ std::size_t RingBuffer::write(const void *src, std::size_t cnt) noexcept
 }
 
 
-auto RingBuffer::getReadVector() const noexcept -> DataPair
+auto RingBuffer::getReadVector() noexcept -> DataPair
 {
     DataPair ret;
 
@@ -176,15 +150,15 @@ auto RingBuffer::getReadVector() const noexcept -> DataPair
     {
         /* Two part vector: the rest of the buffer after the current read ptr,
          * plus some from the start of the buffer. */
-        ret.first.buf = const_cast<std::byte*>(mBuffer.data() + r*mElemSize);
+        ret.first.buf = mBuffer.data() + r*mElemSize;
         ret.first.len = mSizeMask+1 - r;
-        ret.second.buf = const_cast<std::byte*>(mBuffer.data());
+        ret.second.buf = mBuffer.data();
         ret.second.len = cnt2 & mSizeMask;
     }
     else
     {
         /* Single part vector: just the rest of the buffer */
-        ret.first.buf = const_cast<std::byte*>(mBuffer.data() + r*mElemSize);
+        ret.first.buf = mBuffer.data() + r*mElemSize;
         ret.first.len = free_cnt;
         ret.second.buf = nullptr;
         ret.second.len = 0;
@@ -193,7 +167,7 @@ auto RingBuffer::getReadVector() const noexcept -> DataPair
     return ret;
 }
 
-auto RingBuffer::getWriteVector() const noexcept -> DataPair
+auto RingBuffer::getWriteVector() noexcept -> DataPair
 {
     DataPair ret;
 
@@ -208,14 +182,14 @@ auto RingBuffer::getWriteVector() const noexcept -> DataPair
     {
         /* Two part vector: the rest of the buffer after the current write ptr,
          * plus some from the start of the buffer. */
-        ret.first.buf = const_cast<std::byte*>(mBuffer.data() + w*mElemSize);
+        ret.first.buf = mBuffer.data() + w*mElemSize;
         ret.first.len = mSizeMask+1 - w;
-        ret.second.buf = const_cast<std::byte*>(mBuffer.data());
+        ret.second.buf = mBuffer.data();
         ret.second.len = cnt2 & mSizeMask;
     }
     else
     {
-        ret.first.buf = const_cast<std::byte*>(mBuffer.data() + w*mElemSize);
+        ret.first.buf = mBuffer.data() + w*mElemSize;
         ret.first.len = free_cnt;
         ret.second.buf = nullptr;
         ret.second.len = 0;

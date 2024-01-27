@@ -30,6 +30,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -48,7 +49,7 @@
 
 
 struct FileDeleter {
-    void operator()(FILE *file) { fclose(file); }
+    void operator()(gsl::owner<FILE*> file) { fclose(file); }
 };
 using FilePtr = std::unique_ptr<FILE,FileDeleter>;
 
@@ -129,8 +130,6 @@ struct UhjDecoder {
         const al::span<FloatBufferLine> OutSamples, const std::size_t SamplesToDo);
     void decode2(const float *RESTRICT InSamples, const al::span<FloatBufferLine> OutSamples,
         const std::size_t SamplesToDo);
-
-    DEF_NEWDEL(UhjDecoder)
 };
 
 const PhaseShifterT<UhjDecoder::sFilterDelay*2> PShift{};
@@ -438,7 +437,7 @@ int main(int argc, char **argv)
         // 32-bit val, frequency
         fwrite32le(static_cast<uint>(ininfo.samplerate), outfile.get());
         // 32-bit val, bytes per second
-        fwrite32le(static_cast<uint>(ininfo.samplerate)*outchans*sizeof(float), outfile.get());
+        fwrite32le(static_cast<uint>(ininfo.samplerate)*outchans*uint{sizeof(float)}, outfile.get());
         // 16-bit val, frame size
         fwrite16le(static_cast<ushort>(sizeof(float)*outchans), outfile.get());
         // 16-bit val, bits per sample
@@ -456,16 +455,17 @@ int main(int argc, char **argv)
         fwrite32le(0xFFFFFFFF, outfile.get()); // 'data' header len; filled in at close
         if(ferror(outfile.get()))
         {
-            fprintf(stderr, "Error writing wave file header: %s (%d)\n", strerror(errno), errno);
+            fprintf(stderr, "Error writing wave file header: %s (%d)\n",
+                std::generic_category().message(errno).c_str(), errno);
             continue;
         }
 
         auto DataStart = ftell(outfile.get());
 
         auto decoder = std::make_unique<UhjDecoder>();
-        auto inmem = std::vector<float>(BufferLineSize*static_cast<uint>(ininfo.channels));
+        auto inmem = std::vector<float>(size_t{BufferLineSize}*static_cast<uint>(ininfo.channels));
         auto decmem = al::vector<std::array<float,BufferLineSize>, 16>(outchans);
-        auto outmem = std::vector<byte4>(BufferLineSize*outchans);
+        auto outmem = std::vector<byte4>(size_t{BufferLineSize}*outchans);
 
         /* A number of initial samples need to be skipped to cut the lead-in
          * from the all-pass filter delay. The same number of samples need to
@@ -510,7 +510,8 @@ int main(int argc, char **argv)
             std::size_t wrote{fwrite(outmem.data(), sizeof(byte4)*outchans, got, outfile.get())};
             if(wrote < got)
             {
-                fprintf(stderr, "Error writing wave data: %s (%d)\n", strerror(errno), errno);
+                fprintf(stderr, "Error writing wave data: %s (%d)\n",
+                    std::generic_category().message(errno).c_str(), errno);
                 break;
             }
         }

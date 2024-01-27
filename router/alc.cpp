@@ -6,9 +6,10 @@
 #include <string.h>
 #include <stdio.h>
 
-#include <mutex>
 #include <algorithm>
 #include <array>
+#include <mutex>
+#include <tuple>
 
 #include "AL/alc.h"
 #include "alstring.h"
@@ -411,14 +412,14 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *devicename) noexcep
     if(devicename)
     {
         {
-            std::lock_guard<std::recursive_mutex> _{EnumerationLock};
+            std::lock_guard<std::recursive_mutex> enumlock{EnumerationLock};
             if(DevicesList.Names.empty())
-                (void)alcGetString(nullptr, ALC_DEVICE_SPECIFIER);
+                std::ignore = alcGetString(nullptr, ALC_DEVICE_SPECIFIER);
             idx = GetDriverIndexForName(&DevicesList, devicename);
             if(idx < 0)
             {
                 if(AllDevicesList.Names.empty())
-                    (void)alcGetString(nullptr, ALC_ALL_DEVICES_SPECIFIER);
+                    std::ignore = alcGetString(nullptr, ALC_ALL_DEVICES_SPECIFIER);
                 idx = GetDriverIndexForName(&AllDevicesList, devicename);
             }
         }
@@ -502,7 +503,7 @@ ALC_API ALCboolean ALC_APIENTRY alcMakeContextCurrent(ALCcontext *context) noexc
 {
     ALint idx = -1;
 
-    std::lock_guard<std::mutex> _{ContextSwitchLock};
+    std::lock_guard<std::mutex> ctxlock{ContextSwitchLock};
     if(context)
     {
         idx = ContextIfaceMap.lookupByKey(context);
@@ -578,7 +579,7 @@ ALC_API void ALC_APIENTRY alcDestroyContext(ALCcontext *context) noexcept
     ContextIfaceMap.removeByKey(context);
 }
 
-ALC_API ALCcontext* ALC_APIENTRY alcGetCurrentContext(void) noexcept
+ALC_API ALCcontext* ALC_APIENTRY alcGetCurrentContext() noexcept
 {
     DriverIface *iface = GetThreadDriver();
     if(!iface) iface = CurrentCtxDriver.load();
@@ -713,7 +714,7 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *device, ALCenum para
 
     case ALC_DEVICE_SPECIFIER:
     {
-        std::lock_guard<std::recursive_mutex> _{EnumerationLock};
+        std::lock_guard<std::recursive_mutex> enumlock{EnumerationLock};
         DevicesList.clear();
         ALint idx{0};
         for(const auto &drv : DriverList)
@@ -734,7 +735,7 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *device, ALCenum para
 
     case ALC_ALL_DEVICES_SPECIFIER:
     {
-        std::lock_guard<std::recursive_mutex> _{EnumerationLock};
+        std::lock_guard<std::recursive_mutex> enumlock{EnumerationLock};
         AllDevicesList.clear();
         ALint idx{0};
         for(const auto &drv : DriverList)
@@ -760,7 +761,7 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *device, ALCenum para
 
     case ALC_CAPTURE_DEVICE_SPECIFIER:
     {
-        std::lock_guard<std::recursive_mutex> _{EnumerationLock};
+        std::lock_guard<std::recursive_mutex> enumlock{EnumerationLock};
         CaptureDevicesList.clear();
         ALint idx{0};
         for(const auto &drv : DriverList)
@@ -882,9 +883,9 @@ ALC_API ALCdevice* ALC_APIENTRY alcCaptureOpenDevice(const ALCchar *devicename, 
     if(devicename)
     {
         {
-            std::lock_guard<std::recursive_mutex> _{EnumerationLock};
+            std::lock_guard<std::recursive_mutex> enumlock{EnumerationLock};
             if(CaptureDevicesList.Names.empty())
-                (void)alcGetString(nullptr, ALC_CAPTURE_DEVICE_SPECIFIER);
+                std::ignore = alcGetString(nullptr, ALC_CAPTURE_DEVICE_SPECIFIER);
             idx = GetDriverIndexForName(&CaptureDevicesList, devicename);
         }
 
@@ -1009,7 +1010,7 @@ ALC_API ALCboolean ALC_APIENTRY alcSetThreadContext(ALCcontext *context) noexcep
     return ALC_FALSE;
 }
 
-ALC_API ALCcontext* ALC_APIENTRY alcGetThreadContext(void) noexcept
+ALC_API ALCcontext* ALC_APIENTRY alcGetThreadContext() noexcept
 {
     DriverIface *iface = GetThreadDriver();
     if(iface) return iface->alcGetThreadContext();

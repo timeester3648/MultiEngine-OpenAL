@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <iterator>
 #include <limits>
@@ -46,7 +47,7 @@ inline bool sBufferSubDataCompat{false};
 struct ALbufferQueueItem : public VoiceBufferItem {
     ALbuffer *mBuffer{nullptr};
 
-    DISABLE_ALLOC()
+    DISABLE_ALLOC
 };
 
 
@@ -108,19 +109,19 @@ struct ALsource {
 
     /** Direct filter and auxiliary send info. */
     struct {
-        float Gain;
-        float GainHF;
-        float HFReference;
-        float GainLF;
-        float LFReference;
+        float Gain{};
+        float GainHF{};
+        float HFReference{};
+        float GainLF{};
+        float LFReference{};
     } Direct;
     struct SendData {
-        ALeffectslot *Slot;
-        float Gain;
-        float GainHF;
-        float HFReference;
-        float GainLF;
-        float LFReference;
+        ALeffectslot *Slot{};
+        float Gain{};
+        float GainHF{};
+        float HFReference{};
+        float GainLF{};
+        float LFReference{};
     };
     std::array<SendData,MaxSendCount> Send;
 
@@ -159,7 +160,7 @@ struct ALsource {
 
     static void SetName(ALCcontext *context, ALuint id, std::string_view name);
 
-    DISABLE_ALLOC()
+    DISABLE_ALLOC
 
 #ifdef ALSOFT_EAX
 public:
@@ -217,11 +218,6 @@ private:
         Eax3Props source;
         EaxSends sends;
         EAX40ACTIVEFXSLOTS active_fx_slots;
-
-        bool operator==(const Eax4Props& rhs) noexcept
-        {
-            return std::memcmp(this, &rhs, sizeof(Eax4Props)) == 0;
-        }
     };
 
     struct Eax4State {
@@ -234,11 +230,6 @@ private:
         EaxSends sends;
         EAX50ACTIVEFXSLOTS active_fx_slots;
         EaxSpeakerLevels speaker_levels;
-
-        bool operator==(const Eax5Props& rhs) noexcept
-        {
-            return std::memcmp(this, &rhs, sizeof(Eax5Props)) == 0;
-        }
     };
 
     struct Eax5State {
@@ -1041,5 +1032,20 @@ private:
 };
 
 void UpdateAllSourceProps(ALCcontext *context);
+
+struct SourceSubList {
+    uint64_t FreeMask{~0_u64};
+    gsl::owner<std::array<ALsource,64>*> Sources{nullptr};
+
+    SourceSubList() noexcept = default;
+    SourceSubList(const SourceSubList&) = delete;
+    SourceSubList(SourceSubList&& rhs) noexcept : FreeMask{rhs.FreeMask}, Sources{rhs.Sources}
+    { rhs.FreeMask = ~0_u64; rhs.Sources = nullptr; }
+    ~SourceSubList();
+
+    SourceSubList& operator=(const SourceSubList&) = delete;
+    SourceSubList& operator=(SourceSubList&& rhs) noexcept
+    { std::swap(FreeMask, rhs.FreeMask); std::swap(Sources, rhs.Sources); return *this; }
+};
 
 #endif

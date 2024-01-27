@@ -79,7 +79,7 @@ struct StreamPlayer {
     size_t mDecoderOffset{0};
 
     /* The format of the callback samples. */
-    ALenum mFormat;
+    ALenum mFormat{};
 
     StreamPlayer()
     {
@@ -167,8 +167,8 @@ struct StreamPlayer {
                 mSampleFormat = SampleType::Int16;
             else
             {
-                auto fmtbuf = std::make_unique<ALubyte[]>(inf.datalen);
-                inf.data = fmtbuf.get();
+                auto fmtbuf = std::vector<ALubyte>(inf.datalen);
+                inf.data = fmtbuf.data();
                 if(sf_get_chunk_data(iter, &inf) != SF_ERR_NO_ERROR)
                     mSampleFormat = SampleType::Int16;
                 else
@@ -195,12 +195,12 @@ struct StreamPlayer {
         if(mSampleFormat == SampleType::Int16)
         {
             mSamplesPerBlock = 1;
-            mBytesPerBlock = static_cast<size_t>(mSfInfo.channels * 2);
+            mBytesPerBlock = static_cast<size_t>(mSfInfo.channels) * 2;
         }
         else if(mSampleFormat == SampleType::Float)
         {
             mSamplesPerBlock = 1;
-            mBytesPerBlock = static_cast<size_t>(mSfInfo.channels * 4);
+            mBytesPerBlock = static_cast<size_t>(mSfInfo.channels) * 4;
         }
         else
         {
@@ -522,7 +522,8 @@ int main(int argc, char **argv)
 
         /* Get the name portion, without the path, for display. */
         const char *namepart{strrchr(argv[i], '/')};
-        if(namepart || (namepart=strrchr(argv[i], '\\')))
+        if(!namepart) namepart = strrchr(argv[i], '\\');
+        if(namepart)
             ++namepart;
         else
             namepart = argv[i];

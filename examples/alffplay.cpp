@@ -237,7 +237,7 @@ public:
     void setFinished()
     {
         {
-            std::lock_guard<std::mutex> _{mPacketMutex};
+            std::lock_guard<std::mutex> packetlock{mPacketMutex};
             mFinished = true;
         }
         mPacketCond.notify_one();
@@ -246,7 +246,7 @@ public:
     void flush()
     {
         {
-            std::lock_guard<std::mutex> _{mPacketMutex};
+            std::lock_guard<std::mutex> packetlock{mPacketMutex};
             mFinished = true;
 
             mPackets.clear();
@@ -258,7 +258,7 @@ public:
     bool put(const AVPacket *pkt)
     {
         {
-            std::unique_lock<std::mutex> lock{mPacketMutex};
+            std::lock_guard<std::mutex> packet_lock{mPacketMutex};
             if(mTotalSize >= SizeLimit || mFinished)
                 return false;
 
@@ -285,7 +285,7 @@ struct AudioState {
     AVStream *mStream{nullptr};
     AVCodecCtxPtr mCodecCtx;
 
-    DataQueue<2*1024*1024> mQueue;
+    DataQueue<size_t{2}*1024*1024> mQueue;
 
     /* Used for clock difference average computation */
     seconds_d64 mClockDiffAvg{0};
@@ -322,7 +322,7 @@ struct AudioState {
 
     std::mutex mSrcMutex;
     std::condition_variable mSrcCond;
-    std::atomic_flag mConnected;
+    std::atomic_flag mConnected{};
     ALuint mSource{0};
     std::array<ALuint,AudioBufferCount> mBuffers{};
     ALuint mBufferIdx{0};
@@ -372,7 +372,7 @@ struct VideoState {
     AVStream *mStream{nullptr};
     AVCodecCtxPtr mCodecCtx;
 
-    DataQueue<14*1024*1024> mQueue;
+    DataQueue<size_t{14}*1024*1024> mQueue;
 
     /* The pts of the currently displayed frame, and the time (av_gettime) it
      * was last updated - used to have running video pts
@@ -684,9 +684,13 @@ int AudioState::decodeFrame()
             mDecodedFrame->nb_samples, mDstSampleFmt, 0);
         mSamplesMax = mDecodedFrame->nb_samples;
     }
+    /* Copy to a local to mark const. Don't know why this can't be implicit. */
+    using data_t = decltype(decltype(mDecodedFrame)::element_type::data);
+    std::array<const uint8_t*,std::extent_v<data_t>> cdata{};
+    std::copy(std::begin(mDecodedFrame->data), std::end(mDecodedFrame->data), cdata.begin());
     /* Return the amount of sample frames converted */
-    int data_size{swr_convert(mSwresCtx.get(), &mSamples, mDecodedFrame->nb_samples,
-        const_cast<const uint8_t**>(mDecodedFrame->data), mDecodedFrame->nb_samples)};
+    const int data_size{swr_convert(mSwresCtx.get(), &mSamples, mDecodedFrame->nb_samples,
+        cdata.data(), mDecodedFrame->nb_samples)};
 
     av_frame_unref(mDecodedFrame.get());
     return data_size;
@@ -696,7 +700,7 @@ int AudioState::decodeFrame()
  * multiple of the template type size.
  */
 template<typename T>
-static void sample_dup(uint8_t *out, const uint8_t *in, size_t count, size_t frame_size)
+void sample_dup(uint8_t *out, const uint8_t *in, size_t count, size_t frame_size)
 {
     auto *sample = reinterpret_cast<const T*>(in);
     auto *dst = reinterpret_cast<T*>(out);
@@ -712,7 +716,7 @@ static void sample_dup(uint8_t *out, const uint8_t *in, size_t count, size_t fra
     }
 }
 
-static void sample_dup(uint8_t *out, const uint8_t *in, size_t count, size_t frame_size)
+void sample_dup(uint8_t *out, const uint8_t *in, size_t count, size_t frame_size)
 {
     if((frame_size&7) == 0)
         sample_dup<uint64_t>(out, in, count, frame_size);
@@ -738,8 +742,8 @@ bool AudioState::readAudio(uint8_t *samples, unsigned int length, int &sample_sk
         {
             const auto len = static_cast<unsigned int>(mSamplesLen - mSamplesPos);
             if(rem > len) rem = len;
-            std::copy_n(mSamples + static_cast<unsigned int>(mSamplesPos)*mFrameSize,
-                rem*mFrameSize, samples);
+            std::copy_n(mSamples + static_cast<unsigned int>(mSamplesPos)*size_t{mFrameSize},
+                rem*size_t{mFrameSize}, samples);
         }
         else
         {
@@ -749,9 +753,9 @@ bool AudioState::readAudio(uint8_t *samples, unsigned int length, int &sample_sk
             sample_dup(samples, mSamples, rem, mFrameSize);
         }
 
-        mSamplesPos += rem;
+        mSamplesPos += static_cast<int>(rem);
         mCurrentPts += nanoseconds{seconds{rem}} / mCodecCtx->sample_rate;
-        samples += rem*mFrameSize;
+        samples += rem*size_t{mFrameSize};
         audio_size += rem;
 
         while(mSamplesPos >= mSamplesLen)
@@ -939,6 +943,7 @@ int AudioState::handler()
     ALsizei buffer_len{0};
 
     /* Find a suitable format for OpenAL. */
+    const auto layoutmask = mCodecCtx->ch_layout.u.mask; /* NOLINT(*-union-access) */
     mDstChanLayout = 0;
     mFormat = AL_NONE;
     if((mCodecCtx->sample_fmt == AV_SAMPLE_FMT_FLT || mCodecCtx->sample_fmt == AV_SAMPLE_FMT_FLTP
@@ -956,29 +961,28 @@ int AudioState::handler()
         {
             if(alIsExtensionPresent("AL_EXT_MCFORMATS"))
             {
-                if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_7POINT1)
+                if(layoutmask == AV_CH_LAYOUT_7POINT1)
                 {
-                    mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                    mDstChanLayout = layoutmask;
                     mFrameSize *= 8;
                     mFormat = alGetEnumValue("AL_FORMAT_71CHN32");
                 }
-                if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_5POINT1
-                    || mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_5POINT1_BACK)
+                if(layoutmask == AV_CH_LAYOUT_5POINT1 || layoutmask == AV_CH_LAYOUT_5POINT1_BACK)
                 {
-                    mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                    mDstChanLayout = layoutmask;
                     mFrameSize *= 6;
                     mFormat = alGetEnumValue("AL_FORMAT_51CHN32");
                 }
-                if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_QUAD)
+                if(layoutmask == AV_CH_LAYOUT_QUAD)
                 {
-                    mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                    mDstChanLayout = layoutmask;
                     mFrameSize *= 4;
                     mFormat = alGetEnumValue("AL_FORMAT_QUAD32");
                 }
             }
-            if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_MONO)
+            if(layoutmask == AV_CH_LAYOUT_MONO)
             {
-                mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                mDstChanLayout = layoutmask;
                 mFrameSize *= 1;
                 mFormat = AL_FORMAT_MONO_FLOAT32;
             }
@@ -1018,29 +1022,28 @@ int AudioState::handler()
         {
             if(alIsExtensionPresent("AL_EXT_MCFORMATS"))
             {
-                if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_7POINT1)
+                if(layoutmask == AV_CH_LAYOUT_7POINT1)
                 {
-                    mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                    mDstChanLayout = layoutmask;
                     mFrameSize *= 8;
                     mFormat = alGetEnumValue("AL_FORMAT_71CHN8");
                 }
-                if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_5POINT1
-                    || mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_5POINT1_BACK)
+                if(layoutmask == AV_CH_LAYOUT_5POINT1 || layoutmask == AV_CH_LAYOUT_5POINT1_BACK)
                 {
-                    mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                    mDstChanLayout = layoutmask;
                     mFrameSize *= 6;
                     mFormat = alGetEnumValue("AL_FORMAT_51CHN8");
                 }
-                if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_QUAD)
+                if(layoutmask == AV_CH_LAYOUT_QUAD)
                 {
-                    mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                    mDstChanLayout = layoutmask;
                     mFrameSize *= 4;
                     mFormat = alGetEnumValue("AL_FORMAT_QUAD8");
                 }
             }
-            if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_MONO)
+            if(layoutmask == AV_CH_LAYOUT_MONO)
             {
-                mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                mDstChanLayout = layoutmask;
                 mFrameSize *= 1;
                 mFormat = AL_FORMAT_MONO8;
             }
@@ -1072,29 +1075,28 @@ int AudioState::handler()
         {
             if(alIsExtensionPresent("AL_EXT_MCFORMATS"))
             {
-                if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_7POINT1)
+                if(layoutmask == AV_CH_LAYOUT_7POINT1)
                 {
-                    mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                    mDstChanLayout = layoutmask;
                     mFrameSize *= 8;
                     mFormat = alGetEnumValue("AL_FORMAT_71CHN16");
                 }
-                if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_5POINT1
-                    || mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_5POINT1_BACK)
+                if(layoutmask == AV_CH_LAYOUT_5POINT1 || layoutmask == AV_CH_LAYOUT_5POINT1_BACK)
                 {
-                    mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                    mDstChanLayout = layoutmask;
                     mFrameSize *= 6;
                     mFormat = alGetEnumValue("AL_FORMAT_51CHN16");
                 }
-                if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_QUAD)
+                if(layoutmask == AV_CH_LAYOUT_QUAD)
                 {
-                    mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                    mDstChanLayout = layoutmask;
                     mFrameSize *= 4;
                     mFormat = alGetEnumValue("AL_FORMAT_QUAD16");
                 }
             }
-            if(mCodecCtx->ch_layout.u.mask == AV_CH_LAYOUT_MONO)
+            if(layoutmask == AV_CH_LAYOUT_MONO)
             {
-                mDstChanLayout = mCodecCtx->ch_layout.u.mask;
+                mDstChanLayout = layoutmask;
                 mFrameSize *= 1;
                 mFormat = AL_FORMAT_MONO16;
             }
@@ -1165,7 +1167,7 @@ int AudioState::handler()
              * ordering and normalization, so a custom matrix is needed to
              * scale and reorder the source from AmbiX.
              */
-            std::vector<double> mtx(64*64, 0.0);
+            std::vector<double> mtx(size_t{64}*64, 0.0);
             mtx[0 + 0*64] = std::sqrt(0.5);
             mtx[3 + 1*64] = 1.0;
             mtx[1 + 2*64] = 1.0;
@@ -1297,7 +1299,7 @@ int AudioState::handler()
                 mSamplesLen = decodeFrame();
                 mSamplesPos = mSamplesLen;
             } while(mSamplesLen > 0);
-            goto finish;
+            break;
         }
 
         ALenum state;
@@ -1378,7 +1380,6 @@ int AudioState::handler()
 
         mSrcCond.wait_for(srclock, sleep_time);
     }
-finish:
 
     alSourceRewind(mSource);
     alSourcei(mSource, AL_BUFFER, 0);
@@ -1391,7 +1392,7 @@ finish:
 nanoseconds VideoState::getClock()
 {
     /* NOTE: This returns incorrect times while not playing. */
-    std::lock_guard<std::mutex> _{mDispPtsMutex};
+    std::lock_guard<std::mutex> displock{mDispPtsMutex};
     if(mDisplayPtsTime == microseconds::min())
         return nanoseconds::zero();
     auto delta = get_avtime() - mDisplayPtsTime;
@@ -1509,9 +1510,9 @@ void VideoState::updateVideo(SDL_Window *screen, SDL_Renderer *renderer, bool re
             {
                 double aspect_ratio = av_q2d(frame->sample_aspect_ratio);
                 if(aspect_ratio >= 1.0)
-                    frame_width = static_cast<int>(frame_width*aspect_ratio + 0.5);
+                    frame_width = static_cast<int>(std::lround(frame_width * aspect_ratio));
                 else if(aspect_ratio > 0.0)
-                    frame_height = static_cast<int>(frame_height/aspect_ratio + 0.5);
+                    frame_height = static_cast<int>(std::lround(frame_height / aspect_ratio));
             }
             SDL_SetWindowSize(screen, frame_width, frame_height);
         }
@@ -1544,15 +1545,15 @@ void VideoState::updateVideo(SDL_Window *screen, SDL_Renderer *renderer, bool re
                 }
 
                 /* point pict at the queue */
-                std::array<uint8_t*,3> pict_data;
-                pict_data[0] = static_cast<uint8_t*>(pixels);
-                pict_data[1] = pict_data[0] + w*h;
-                pict_data[2] = pict_data[1] + w*h/4;
+                const std::array pict_data{
+                    static_cast<uint8_t*>(pixels),
+                    static_cast<uint8_t*>(pixels) + ptrdiff_t{w}*h,
+                    static_cast<uint8_t*>(pixels) + ptrdiff_t{w}*h + ptrdiff_t{w}*h/4
+                };
+                const std::array pict_linesize{pitch, pitch/2, pitch/2};
 
-                std::array pict_linesize{pitch, pitch/2, pitch/2};
-
-                sws_scale(mSwscaleCtx.get(), reinterpret_cast<uint8_t**>(frame->data),
-                    frame->linesize, 0, h, pict_data.data(), pict_linesize.data());
+                sws_scale(mSwscaleCtx.get(), std::data(frame->data), std::data(frame->linesize),
+                    0, h, pict_data.data(), pict_linesize.data());
                 SDL_UnlockTexture(mImage);
             }
 
@@ -1570,7 +1571,7 @@ void VideoState::updateVideo(SDL_Window *screen, SDL_Renderer *renderer, bool re
     {
         auto disp_time = get_avtime();
 
-        std::lock_guard<std::mutex> _{mDispPtsMutex};
+        std::lock_guard<std::mutex> displock{mDispPtsMutex};
         mDisplayPts = vp->mPts;
         mDisplayPtsTime = disp_time;
     }
@@ -1603,7 +1604,7 @@ int VideoState::handler()
     auto sender = std::async(std::launch::async, packet_sender);
 
     {
-        std::lock_guard<std::mutex> _{mDispPtsMutex};
+        std::lock_guard<std::mutex> displock{mDispPtsMutex};
         mDisplayPtsTime = get_avtime();
     }
 

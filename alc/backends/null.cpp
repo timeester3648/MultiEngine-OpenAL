@@ -41,9 +41,9 @@ namespace {
 using std::chrono::seconds;
 using std::chrono::milliseconds;
 using std::chrono::nanoseconds;
+using namespace std::string_view_literals;
 
-/* NOLINTNEXTLINE(*-avoid-c-arrays) */
-constexpr char nullDevice[] = "No Output";
+[[nodiscard]] constexpr auto GetDeviceName() noexcept { return "No Output"sv; }
 
 
 struct NullBackend final : public BackendBase {
@@ -58,8 +58,6 @@ struct NullBackend final : public BackendBase {
 
     std::atomic<bool> mKillNow{true};
     std::thread mThread;
-
-    DEF_NEWDEL(NullBackend)
 };
 
 int NullBackend::mixerProc()
@@ -109,8 +107,8 @@ int NullBackend::mixerProc()
 void NullBackend::open(std::string_view name)
 {
     if(name.empty())
-        name = nullDevice;
-    else if(name != nullDevice)
+        name = GetDeviceName();
+    else if(name != GetDeviceName())
         throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
             static_cast<int>(name.length()), name.data()};
 
@@ -153,17 +151,15 @@ bool NullBackendFactory::querySupport(BackendType type)
 
 std::string NullBackendFactory::probe(BackendType type)
 {
-    std::string outnames;
     switch(type)
     {
     case BackendType::Playback:
-        /* Includes null char. */
-        outnames.append(nullDevice, sizeof(nullDevice));
-        break;
+        /* Include null char. */
+        return std::string{GetDeviceName()} + '\0';
     case BackendType::Capture:
         break;
     }
-    return outnames;
+    return std::string{};
 }
 
 BackendPtr NullBackendFactory::createBackend(DeviceBase *device, BackendType type)

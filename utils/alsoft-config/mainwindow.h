@@ -1,6 +1,8 @@
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
+#include <memory>
+
 #include <QMainWindow>
 #include <QListWidget>
 
@@ -10,10 +12,6 @@ class MainWindow;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
-
-public:
-    explicit MainWindow(QWidget *parent=nullptr);
-    ~MainWindow() override;
 
 private slots:
     void cancelCloseAction();
@@ -59,16 +57,20 @@ private slots:
 
     void selectWaveOutput();
 
-private:
-    Ui::MainWindow *ui;
+public:
+    explicit MainWindow(QWidget *parent=nullptr);
+    ~MainWindow() override;
 
-    QValidator *mPeriodSizeValidator{};
-    QValidator *mPeriodCountValidator{};
-    QValidator *mSourceCountValidator{};
-    QValidator *mEffectSlotValidator{};
-    QValidator *mSourceSendValidator{};
-    QValidator *mSampleRateValidator{};
-    QValidator *mJackBufferValidator{};
+private:
+    std::unique_ptr<QValidator> mPeriodSizeValidator;
+    std::unique_ptr<QValidator> mPeriodCountValidator;
+    std::unique_ptr<QValidator> mSourceCountValidator;
+    std::unique_ptr<QValidator> mEffectSlotValidator;
+    std::unique_ptr<QValidator> mSourceSendValidator;
+    std::unique_ptr<QValidator> mSampleRateValidator;
+    std::unique_ptr<QValidator> mJackBufferValidator;
+
+    std::unique_ptr<Ui::MainWindow> ui;
 
     bool mNeedsSave{};
 

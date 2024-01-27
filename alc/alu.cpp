@@ -107,15 +107,14 @@ namespace {
 
 using uint = unsigned int;
 using namespace std::chrono;
-
-using namespace std::placeholders;
+using namespace std::string_view_literals;
 
 float InitConeScale()
 {
     float ret{1.0f};
     if(auto optval = al::getenv("__ALSOFT_HALF_ANGLE_CONES"))
     {
-        if(al::strcasecmp(optval->c_str(), "true") == 0
+        if(al::case_compare(*optval, "true"sv) == 0
             || strtol(optval->c_str(), nullptr, 0) == 1)
             ret *= 0.5f;
     }
@@ -261,15 +260,15 @@ ResamplerFunc PrepareResampler(Resampler resampler, uint increment, InterpState 
     case Resampler::Linear:
         break;
     case Resampler::Cubic:
-        state->cubic.filter = gCubicSpline.Tab.data();
+        state->emplace<CubicState>().filter = gCubicSpline.Tab.data();
         break;
     case Resampler::FastBSinc12:
     case Resampler::BSinc12:
-        BsincPrepare(increment, &state->bsinc, &gBSinc12);
+        BsincPrepare(increment, &state->emplace<BsincState>(), &gBSinc12);
         break;
     case Resampler::FastBSinc24:
     case Resampler::BSinc24:
-        BsincPrepare(increment, &state->bsinc, &gBSinc24);
+        BsincPrepare(increment, &state->emplace<BsincState>(), &gBSinc24);
         break;
     }
     return SelectResampler(resampler, increment);
@@ -450,14 +449,14 @@ bool CalcEffectSlotParams(EffectSlot *slot, EffectSlot **sorted_slots, ContextBa
     slot->Target = props->Target;
     slot->EffectType = props->Type;
     slot->mEffectProps = props->Props;
-    if(props->Type == EffectSlotType::Reverb || props->Type == EffectSlotType::EAXReverb)
+    if(auto *reverbprops = std::get_if<ReverbProps>(&props->Props))
     {
-        slot->RoomRolloff = props->Props.Reverb.RoomRolloffFactor;
-        slot->DecayTime = props->Props.Reverb.DecayTime;
-        slot->DecayLFRatio = props->Props.Reverb.DecayLFRatio;
-        slot->DecayHFRatio = props->Props.Reverb.DecayHFRatio;
-        slot->DecayHFLimit = props->Props.Reverb.DecayHFLimit;
-        slot->AirAbsorptionGainHF = props->Props.Reverb.AirAbsorptionGainHF;
+        slot->RoomRolloff = reverbprops->RoomRolloffFactor;
+        slot->DecayTime = reverbprops->DecayTime;
+        slot->DecayLFRatio = reverbprops->DecayLFRatio;
+        slot->DecayHFRatio = reverbprops->DecayHFRatio;
+        slot->DecayHFLimit = reverbprops->DecayHFLimit;
+        slot->AirAbsorptionGainHF = reverbprops->AirAbsorptionGainHF;
     }
     else
     {
@@ -498,7 +497,7 @@ bool CalcEffectSlotParams(EffectSlot *slot, EffectSlot **sorted_slots, ContextBa
         }
     }
 
-    AtomicReplaceHead(context->mFreeEffectslotProps, props);
+    AtomicReplaceHead(context->mFreeEffectSlotProps, props);
 
     EffectTarget output;
     if(EffectSlot *target{slot->Target})
@@ -678,16 +677,16 @@ void AmbiRotator(AmbiRotateMatrix &matrix, const int order)
     auto P = [](const int i, const int l, const int a, const int n, const size_t last_band,
         const AmbiRotateMatrix &R)
     {
-        const float ri1{ R[ 1+2][static_cast<size_t>(i+2)]};
-        const float rim1{R[-1+2][static_cast<size_t>(i+2)]};
-        const float ri0{ R[ 0+2][static_cast<size_t>(i+2)]};
+        const float ri1{ R[ 1+2][static_cast<size_t>(i+2_z)]};
+        const float rim1{R[-1+2][static_cast<size_t>(i+2_z)]};
+        const float ri0{ R[ 0+2][static_cast<size_t>(i+2_z)]};
 
         const size_t y{last_band + static_cast<size_t>(a+l-1)};
         if(n == -l)
-            return ri1*R[last_band][y] + rim1*R[last_band + static_cast<size_t>(l-1)*2][y];
+            return ri1*R[last_band][y] + rim1*R[last_band + static_cast<size_t>(l-1_z)*2][y];
         if(n == l)
-            return ri1*R[last_band + static_cast<size_t>(l-1)*2][y] - rim1*R[last_band][y];
-        return ri0*R[last_band + static_cast<size_t>(n+l-1)][y];
+            return ri1*R[last_band + static_cast<size_t>(l-1_z)*2][y] - rim1*R[last_band][y];
+        return ri0*R[last_band + static_cast<size_t>(l-1_z+n)][y];
     };
 
     auto U = [P](const int l, const int m, const int n, const size_t last_band,
@@ -1181,7 +1180,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
              * where it can be 0 or full (non-mono sources are always full
              * spread here).
              */
-            const float spread{Spread * (voice->mFmtChannels == FmtMono)};
+            const float spread{Spread * float(voice->mFmtChannels == FmtMono)};
 
             /* Local sources on HRTF play with each channel panned to its
              * relative location around the listener, providing "virtual
@@ -1329,7 +1328,7 @@ void CalcPanningAndFilters(Voice *voice, const float xpos, const float ypos, con
              * where it can be 0 or full (non-mono sources are always full
              * spread here).
              */
-            const float spread{Spread * (voice->mFmtChannels == FmtMono)};
+            const float spread{Spread * float(voice->mFmtChannels == FmtMono)};
             for(size_t c{0};c < num_channels;c++)
             {
                 /* Special-case LFE */
@@ -1587,13 +1586,15 @@ void CalcAttnSourceParams(Voice *voice, const VoiceProps *props, const ContextBa
         if(Angle >= props->OuterAngle)
         {
             ConeGain = props->OuterGain;
-            ConeHF = lerpf(1.0f, props->OuterGainHF, props->DryGainHFAuto);
+            if(props->DryGainHFAuto)
+                ConeHF = props->OuterGainHF;
         }
         else if(Angle >= props->InnerAngle)
         {
             const float scale{(Angle-props->InnerAngle) / (props->OuterAngle-props->InnerAngle)};
             ConeGain = lerpf(1.0f, props->OuterGain, scale);
-            ConeHF = lerpf(1.0f, props->OuterGainHF, scale * props->DryGainHFAuto);
+            if(props->DryGainHFAuto)
+                ConeHF = lerpf(1.0f, props->OuterGainHF, scale);
         }
 
         DryGainBase *= ConeGain;
@@ -1657,29 +1658,7 @@ void CalcAttnSourceParams(Voice *voice, const VoiceProps *props, const ContextBa
             if(!SendSlots[i]->AuxSendAuto)
                 continue;
 
-            GainTriplet DecayDistance;
-            /* Calculate the distances to where this effect's decay reaches
-             * -60dB.
-             */
-            DecayDistance.Base = SendSlots[i]->DecayTime * SpeedOfSoundMetersPerSec;
-            DecayDistance.LF = DecayDistance.Base * SendSlots[i]->DecayLFRatio;
-            DecayDistance.HF = SendSlots[i]->DecayHFRatio;
-            if(SendSlots[i]->DecayHFLimit)
-            {
-                const float airAbsorption{SendSlots[i]->AirAbsorptionGainHF};
-                if(airAbsorption < 1.0f)
-                {
-                    /* Calculate the distance to where this effect's air
-                     * absorption reaches -60dB, and limit the effect's HF
-                     * decay distance (so it doesn't take any longer to decay
-                     * than the air would allow).
-                     */
-                    static constexpr float log10_decaygain{-3.0f/*std::log10(ReverbDecayGain)*/};
-                    const float absorb_dist{log10_decaygain / std::log10(airAbsorption)};
-                    DecayDistance.HF = minf(absorb_dist, DecayDistance.HF);
-                }
-            }
-            DecayDistance.HF *= DecayDistance.Base;
+            const float DecayDistance{SendSlots[i]->DecayTime * SpeedOfSoundMetersPerSec};
 
             /* Apply a decay-time transformation to the wet path, based on the
              * source distance. The initial decay of the reverb effect is
@@ -1691,19 +1670,9 @@ void CalcAttnSourceParams(Voice *voice, const VoiceProps *props, const ContextBa
              * with the reverb and source rolloff parameters.
              */
             const float baseAttn{DryAttnBase};
-            const float fact{distance_base / DecayDistance.Base};
+            const float fact{distance_base / DecayDistance};
             const float gain{std::pow(ReverbDecayGain, fact)*(1.0f-baseAttn) + baseAttn};
             WetGain[i].Base *= gain;
-
-            if(gain > 0.0f)
-            {
-                const float hffact{distance_base / DecayDistance.HF};
-                const float gainhf{std::pow(ReverbDecayGain, hffact)*(1.0f-baseAttn) + baseAttn};
-                WetGain[i].HF *= minf(gainhf/gain, 1.0f);
-                const float lffact{distance_base / DecayDistance.LF};
-                const float gainlf{std::pow(ReverbDecayGain, lffact)*(1.0f-baseAttn) + baseAttn};
-                WetGain[i].LF *= minf(gainlf/gain, 1.0f);
-            }
         }
     }
 
@@ -1770,7 +1739,7 @@ void CalcSourceParams(Voice *voice, ContextBase *context, bool force)
 
     if(props)
     {
-        voice->mProps = *props;
+        voice->mProps = static_cast<VoiceProps&>(*props);
 
         AtomicReplaceHead(context->mFreeVoiceProps, props);
     }
@@ -1910,7 +1879,7 @@ void ProcessVoiceChanges(ContextBase *ctx)
     ctx->mCurrentVoiceChange.store(cur, std::memory_order_release);
 }
 
-void ProcessParamUpdates(ContextBase *ctx, const EffectSlotArray &slots,
+void ProcessParamUpdates(ContextBase *ctx, const al::span<EffectSlot*> slots,
     const al::span<Voice*> voices)
 {
     ProcessVoiceChanges(ctx);
@@ -1919,7 +1888,7 @@ void ProcessParamUpdates(ContextBase *ctx, const EffectSlotArray &slots,
     if(!ctx->mHoldUpdates.load(std::memory_order_acquire)) LIKELY
     {
         bool force{CalcContextParams(ctx)};
-        auto sorted_slots = const_cast<EffectSlot**>(slots.data() + slots.size());
+        auto sorted_slots = al::to_address(slots.end());
         for(EffectSlot *slot : slots)
             force |= CalcEffectSlotParams(slot, sorted_slots, ctx);
 
@@ -1943,7 +1912,7 @@ void ProcessContexts(DeviceBase *device, const uint SamplesToDo)
 
     for(ContextBase *ctx : *device->mContexts.load(std::memory_order_acquire))
     {
-        const EffectSlotArray &auxslots = *ctx->mActiveAuxSlots.load(std::memory_order_acquire);
+        auto auxslots = al::span{*ctx->mActiveAuxSlots.load(std::memory_order_acquire)};
         const al::span<Voice*> voices{ctx->getVoicesSpanAcquired()};
 
         /* Process pending property updates for objects on the context. */
@@ -1965,16 +1934,12 @@ void ProcessContexts(DeviceBase *device, const uint SamplesToDo)
         }
 
         /* Process effects. */
-        if(const size_t num_slots{auxslots.size()})
+        if(!auxslots.empty())
         {
-            auto slots = auxslots.data();
-            auto slots_end = slots + num_slots;
-
             /* Sort the slots into extra storage, so that effect slots come
              * before their effect slot target (or their targets' target).
              */
-            const al::span<EffectSlot*> sorted_slots{const_cast<EffectSlot**>(slots_end),
-                num_slots};
+            const al::span sorted_slots{al::to_address(auxslots.end()), auxslots.size()};
             /* Skip sorting if it has already been done. */
             if(!sorted_slots[0])
             {
@@ -1982,7 +1947,7 @@ void ProcessContexts(DeviceBase *device, const uint SamplesToDo)
                  * sorted list so that all slots without a target slot go to
                  * the end.
                  */
-                std::copy(slots, slots_end, sorted_slots.begin());
+                std::copy(auxslots.begin(), auxslots.end(), sorted_slots.begin());
                 auto split_point = std::partition(sorted_slots.begin(), sorted_slots.end(),
                     [](const EffectSlot *slot) noexcept -> bool
                     { return slot->Target != nullptr; });
@@ -2069,11 +2034,12 @@ void ApplyDistanceComp(const al::span<FloatBufferLine> Samples, const size_t Sam
 void ApplyDither(const al::span<FloatBufferLine> Samples, uint *dither_seed,
     const float quant_scale, const size_t SamplesToDo)
 {
+    static constexpr double invRNGRange{1.0 / std::numeric_limits<uint>::max()};
     ASSUME(SamplesToDo > 0);
 
     /* Dithering. Generate whitenoise (uniform distribution of random values
      * between -1 and +1) and add it to the sample values, after scaling up to
-     * the desired quantization depth amd before rounding.
+     * the desired quantization depth and before rounding.
      */
     const float invscale{1.0f / quant_scale};
     uint seed{*dither_seed};
@@ -2082,7 +2048,7 @@ void ApplyDither(const al::span<FloatBufferLine> Samples, uint *dither_seed,
         float val{sample * quant_scale};
         uint rng0{dither_rng(&seed)};
         uint rng1{dither_rng(&seed)};
-        val += static_cast<float>(rng0*(1.0/UINT_MAX) - rng1*(1.0/UINT_MAX));
+        val += static_cast<float>(rng0*invRNGRange - rng1*invRNGRange);
         return fast_roundf(val) * invscale;
     };
     for(FloatBufferLine &inout : Samples)
@@ -2260,10 +2226,12 @@ void DeviceBase::handleDisconnect(const char *msg, ...)
         AsyncEvent evt{std::in_place_type<AsyncDisconnectEvent>};
         auto &disconnect = std::get<AsyncDisconnectEvent>(evt);
 
+        /* NOLINTBEGIN(*-array-to-pointer-decay) */
         va_list args;
         va_start(args, msg);
         int msglen{vsnprintf(disconnect.msg.data(), disconnect.msg.size(), msg, args)};
         va_end(args);
+        /* NOLINTEND(*-array-to-pointer-decay) */
 
         if(msglen < 0 || static_cast<size_t>(msglen) >= disconnect.msg.size())
             disconnect.msg[sizeof(disconnect.msg)-1] = 0;

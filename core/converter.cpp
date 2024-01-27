@@ -24,26 +24,23 @@ static_assert((BufferLineSize-1)/MaxPitch > 0, "MaxPitch is too large for Buffer
 static_assert((INT_MAX>>MixerFracBits)/MaxPitch > BufferLineSize,
     "MaxPitch and/or BufferLineSize are too large for MixerFracBits!");
 
-/* Base template left undefined. Should be marked =delete, but Clang 3.8.1
- * chokes on that given the inline specializations.
- */
 template<DevFmtType T>
-inline float LoadSample(DevFmtType_t<T> val) noexcept;
+constexpr float LoadSample(DevFmtType_t<T> val) noexcept = delete;
 
-template<> inline float LoadSample<DevFmtByte>(DevFmtType_t<DevFmtByte> val) noexcept
-{ return val * (1.0f/128.0f); }
-template<> inline float LoadSample<DevFmtShort>(DevFmtType_t<DevFmtShort> val) noexcept
-{ return val * (1.0f/32768.0f); }
-template<> inline float LoadSample<DevFmtInt>(DevFmtType_t<DevFmtInt> val) noexcept
+template<> constexpr float LoadSample<DevFmtByte>(DevFmtType_t<DevFmtByte> val) noexcept
+{ return float(val) * (1.0f/128.0f); }
+template<> constexpr float LoadSample<DevFmtShort>(DevFmtType_t<DevFmtShort> val) noexcept
+{ return float(val) * (1.0f/32768.0f); }
+template<> constexpr float LoadSample<DevFmtInt>(DevFmtType_t<DevFmtInt> val) noexcept
 { return static_cast<float>(val) * (1.0f/2147483648.0f); }
-template<> inline float LoadSample<DevFmtFloat>(DevFmtType_t<DevFmtFloat> val) noexcept
+template<> constexpr float LoadSample<DevFmtFloat>(DevFmtType_t<DevFmtFloat> val) noexcept
 { return val; }
 
-template<> inline float LoadSample<DevFmtUByte>(DevFmtType_t<DevFmtUByte> val) noexcept
+template<> constexpr float LoadSample<DevFmtUByte>(DevFmtType_t<DevFmtUByte> val) noexcept
 { return LoadSample<DevFmtByte>(static_cast<int8_t>(val - 128)); }
-template<> inline float LoadSample<DevFmtUShort>(DevFmtType_t<DevFmtUShort> val) noexcept
+template<> constexpr float LoadSample<DevFmtUShort>(DevFmtType_t<DevFmtUShort> val) noexcept
 { return LoadSample<DevFmtShort>(static_cast<int16_t>(val - 32768)); }
-template<> inline float LoadSample<DevFmtUInt>(DevFmtType_t<DevFmtUInt> val) noexcept
+template<> constexpr float LoadSample<DevFmtUInt>(DevFmtType_t<DevFmtUInt> val) noexcept
 { return LoadSample<DevFmtInt>(static_cast<int32_t>(val - 2147483648u)); }
 
 
@@ -216,8 +213,8 @@ uint SampleConverter::availableOut(uint srcframes) const
 
 uint SampleConverter::convert(const void **src, uint *srcframes, void *dst, uint dstframes)
 {
-    const uint SrcFrameSize{static_cast<uint>(mChan.size()) * mSrcTypeSize};
-    const uint DstFrameSize{static_cast<uint>(mChan.size()) * mDstTypeSize};
+    const size_t SrcFrameSize{mChan.size() * mSrcTypeSize};
+    const size_t DstFrameSize{mChan.size() * mDstTypeSize};
     const uint increment{mIncrement};
     auto SamplesIn = static_cast<const std::byte*>(*src);
     uint NumSrcSamples{*srcframes};
@@ -328,9 +325,9 @@ uint SampleConverter::convertPlanar(const void **src, uint *srcframes, void *con
              */
             for(size_t chan{0u};chan < mChan.size();chan++)
             {
-                LoadSamples(&mChan[chan].PrevSamples[prepcount],
-                    static_cast<const std::byte*>(src[chan]), 1, mSrcType, readable);
-                src[chan] = static_cast<const std::byte*>(src[chan]) + mSrcTypeSize*readable;
+                auto *samples = static_cast<const std::byte*>(src[chan]);
+                LoadSamples(&mChan[chan].PrevSamples[prepcount], samples, 1, mSrcType, readable);
+                src[chan] = samples + size_t{mSrcTypeSize}*readable;
             }
 
             mSrcPrepCount = prepcount + readable;
@@ -377,7 +374,7 @@ uint SampleConverter::convertPlanar(const void **src, uint *srcframes, void *con
             mResample(&mState, SrcData+MaxResamplerEdge, DataPosFrac, increment,
                 {DstData, DstSize});
 
-            std::byte *DstSamples = static_cast<std::byte*>(dst[chan]) + pos*mDstTypeSize;
+            auto *DstSamples = static_cast<std::byte*>(dst[chan]) + pos*size_t{mDstTypeSize};
             StoreSamples(DstSamples, DstData, 1, mDstType, DstSize);
         }
 
@@ -390,7 +387,7 @@ uint SampleConverter::convertPlanar(const void **src, uint *srcframes, void *con
         /* Update the src and dst pointers in case there's still more to do. */
         const uint srcread{minu(NumSrcSamples, SrcDataEnd + mSrcPrepCount - prepcount)};
         for(size_t chan{0u};chan < mChan.size();chan++)
-            src[chan] = static_cast<const std::byte*>(src[chan]) + mSrcTypeSize*srcread;
+            src[chan] = static_cast<const std::byte*>(src[chan]) + size_t{mSrcTypeSize}*srcread;
         NumSrcSamples -= srcread;
 
         pos += DstSize;

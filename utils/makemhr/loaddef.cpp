@@ -34,10 +34,13 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "albit.h"
 #include "alfstream.h"
+#include "alnumeric.h"
 #include "alspan.h"
 #include "alstring.h"
 #include "makemhr.h"
@@ -46,12 +49,12 @@
 #include "mysofa.h"
 
 // Constants for accessing the token reader's ring buffer.
-#define TR_RING_BITS                 (16)
-#define TR_RING_SIZE                 (1 << TR_RING_BITS)
-#define TR_RING_MASK                 (TR_RING_SIZE - 1)
+constexpr uint TRRingBits{16};
+constexpr uint TRRingSize{1 << TRRingBits};
+constexpr uint TRRingMask{TRRingSize - 1};
 
 // The token reader's load interval in bytes.
-#define TR_LOAD_SIZE                 (TR_RING_SIZE >> 2)
+constexpr uint TRLoadSize{TRRingSize >> 2};
 
 // Token reader state for parsing the data set definition.
 struct TokenReaderT {
@@ -59,7 +62,7 @@ struct TokenReaderT {
     const char *mName{};
     uint        mLine{};
     uint        mColumn{};
-    char mRing[TR_RING_SIZE]{};
+    std::array<char,TRRingSize> mRing{};
     std::streamsize mIn{};
     std::streamsize mOut{};
 
@@ -70,44 +73,48 @@ struct TokenReaderT {
 
 // The maximum identifier length used when processing the data set
 // definition.
-#define MAX_IDENT_LEN                (16)
+constexpr uint MaxIdentLen{16};
 
 // The limits for the listener's head 'radius' in the data set definition.
-#define MIN_RADIUS                   (0.05)
-#define MAX_RADIUS                   (0.15)
+constexpr double MinRadius{0.05};
+constexpr double MaxRadius{0.15};
 
 // The maximum number of channels that can be addressed for a WAVE file
 // source listed in the data set definition.
-#define MAX_WAVE_CHANNELS            (65535)
+constexpr uint MaxWaveChannels{65535};
 
 // The limits to the byte size for a binary source listed in the definition
 // file.
-#define MIN_BIN_SIZE                 (2)
-#define MAX_BIN_SIZE                 (4)
-
-// The minimum number of significant bits for binary sources listed in the
-// data set definition.  The maximum is calculated from the byte size.
-#define MIN_BIN_BITS                 (16)
+enum : uint {
+    MinBinSize = 2,
+    MaxBinSize = 4
+};
 
 // The limits to the number of significant bits for an ASCII source listed in
 // the data set definition.
-#define MIN_ASCII_BITS               (16)
-#define MAX_ASCII_BITS               (32)
+enum : uint {
+    MinASCIIBits = 16,
+    MaxASCIIBits = 32
+};
 
 // The four-character-codes for RIFF/RIFX WAVE file chunks.
-#define FOURCC_RIFF                  (0x46464952) // 'RIFF'
-#define FOURCC_RIFX                  (0x58464952) // 'RIFX'
-#define FOURCC_WAVE                  (0x45564157) // 'WAVE'
-#define FOURCC_FMT                   (0x20746D66) // 'fmt '
-#define FOURCC_DATA                  (0x61746164) // 'data'
-#define FOURCC_LIST                  (0x5453494C) // 'LIST'
-#define FOURCC_WAVL                  (0x6C766177) // 'wavl'
-#define FOURCC_SLNT                  (0x746E6C73) // 'slnt'
+enum : uint {
+    FOURCC_RIFF = 0x46464952, // 'RIFF'
+    FOURCC_RIFX = 0x58464952, // 'RIFX'
+    FOURCC_WAVE = 0x45564157, // 'WAVE'
+    FOURCC_FMT  = 0x20746D66, // 'fmt '
+    FOURCC_DATA = 0x61746164, // 'data'
+    FOURCC_LIST = 0x5453494C, // 'LIST'
+    FOURCC_WAVL = 0x6C766177, // 'wavl'
+    FOURCC_SLNT = 0x746E6C73, // 'slnt'
+};
 
 // The supported wave formats.
-#define WAVE_FORMAT_PCM              (0x0001)
-#define WAVE_FORMAT_IEEE_FLOAT       (0x0003)
-#define WAVE_FORMAT_EXTENSIBLE       (0xFFFE)
+enum : uint {
+    WAVE_FORMAT_PCM        = 0x0001,
+    WAVE_FORMAT_IEEE_FLOAT = 0x0003,
+    WAVE_FORMAT_EXTENSIBLE = 0xFFFE,
+};
 
 
 enum ByteOrderT {
@@ -197,13 +204,14 @@ static int TrLoad(TokenReaderT *tr)
 {
     std::istream &istream = tr->mIStream;
 
-    std::streamsize toLoad{TR_RING_SIZE - static_cast<std::streamsize>(tr->mIn - tr->mOut)};
-    if(toLoad >= TR_LOAD_SIZE && istream.good())
+    std::streamsize toLoad{TRRingSize - static_cast<std::streamsize>(tr->mIn - tr->mOut)};
+    if(toLoad >= TRLoadSize && istream.good())
     {
-        // Load TR_LOAD_SIZE (or less if at the end of the file) per read.
-        toLoad = TR_LOAD_SIZE;
-        std::streamsize in{tr->mIn&TR_RING_MASK};
-        std::streamsize count{TR_RING_SIZE - in};
+        // Load TRLoadSize (or less if at the end of the file) per read.
+        toLoad = TRLoadSize;
+
+        const auto in = static_cast<uint>(tr->mIn&TRRingMask);
+        std::streamsize count{TRRingSize - in};
         if(count < toLoad)
         {
             istream.read(&tr->mRing[in], count);
@@ -217,10 +225,10 @@ static int TrLoad(TokenReaderT *tr)
             tr->mIn += istream.gcount();
         }
 
-        if(tr->mOut >= TR_RING_SIZE)
+        if(tr->mOut >= TRRingSize)
         {
-            tr->mOut -= TR_RING_SIZE;
-            tr->mIn -= TR_RING_SIZE;
+            tr->mOut -= TRRingSize;
+            tr->mIn -= TRRingSize;
         }
     }
     if(tr->mIn > tr->mOut)
@@ -240,21 +248,23 @@ static void TrErrorVA(const TokenReaderT *tr, uint line, uint column, const char
 // Used to display an error at a saved line/column.
 static void TrErrorAt(const TokenReaderT *tr, uint line, uint column, const char *format, ...)
 {
+    /* NOLINTBEGIN(*-array-to-pointer-decay) */
     va_list argPtr;
-
     va_start(argPtr, format);
     TrErrorVA(tr, line, column, format, argPtr);
     va_end(argPtr);
+    /* NOLINTEND(*-array-to-pointer-decay) */
 }
 
 // Used to display an error at the current line/column.
 static void TrError(const TokenReaderT *tr, const char *format, ...)
 {
+    /* NOLINTBEGIN(*-array-to-pointer-decay) */
     va_list argPtr;
-
     va_start(argPtr, format);
     TrErrorVA(tr, tr->mLine, tr->mColumn, format, argPtr);
     va_end(argPtr);
+    /* NOLINTEND(*-array-to-pointer-decay) */
 }
 
 // Skips to the next line.
@@ -264,7 +274,7 @@ static void TrSkipLine(TokenReaderT *tr)
 
     while(TrLoad(tr))
     {
-        ch = tr->mRing[tr->mOut&TR_RING_MASK];
+        ch = tr->mRing[tr->mOut&TRRingMask];
         tr->mOut++;
         if(ch == '\n')
         {
@@ -281,7 +291,7 @@ static int TrSkipWhitespace(TokenReaderT *tr)
 {
     while(TrLoad(tr))
     {
-        char ch{tr->mRing[tr->mOut&TR_RING_MASK]};
+        char ch{tr->mRing[tr->mOut&TRRingMask]};
         if(isspace(ch))
         {
             tr->mOut++;
@@ -315,7 +325,7 @@ static int TrIsIdent(TokenReaderT *tr)
 {
     if(!TrSkipWhitespace(tr))
         return 0;
-    char ch{tr->mRing[tr->mOut&TR_RING_MASK]};
+    char ch{tr->mRing[tr->mOut&TRRingMask]};
     return ch == '_' || isalpha(ch);
 }
 
@@ -334,7 +344,7 @@ static int TrIsOperator(TokenReaderT *tr, const char *op)
     len = 0;
     while(op[len] != '\0' && out < tr->mIn)
     {
-        ch = tr->mRing[out&TR_RING_MASK];
+        ch = tr->mRing[out&TRRingMask];
         if(ch != op[len]) break;
         len++;
         out++;
@@ -359,7 +369,7 @@ static int TrReadIdent(TokenReaderT *tr, const uint maxLen, char *ident)
     if(TrSkipWhitespace(tr))
     {
         col = tr->mColumn;
-        ch = tr->mRing[tr->mOut&TR_RING_MASK];
+        ch = tr->mRing[tr->mOut&TRRingMask];
         if(ch == '_' || isalpha(ch))
         {
             len = 0;
@@ -370,7 +380,7 @@ static int TrReadIdent(TokenReaderT *tr, const uint maxLen, char *ident)
                 tr->mOut++;
                 if(!TrLoad(tr))
                     break;
-                ch = tr->mRing[tr->mOut&TR_RING_MASK];
+                ch = tr->mRing[tr->mOut&TRRingMask];
             } while(ch == '_' || isdigit(ch) || isalpha(ch));
 
             tr->mColumn += len;
@@ -396,7 +406,7 @@ static int TrReadInt(TokenReaderT *tr, const int loBound, const int hiBound, int
         col = tr->mColumn;
         uint len{0};
         std::array<char,64+1> temp{};
-        char ch{tr->mRing[tr->mOut&TR_RING_MASK]};
+        char ch{tr->mRing[tr->mOut&TRRingMask]};
         if(ch == '+' || ch == '-')
         {
             temp[len] = ch;
@@ -406,7 +416,7 @@ static int TrReadInt(TokenReaderT *tr, const int loBound, const int hiBound, int
         uint digis{0};
         while(TrLoad(tr))
         {
-            ch = tr->mRing[tr->mOut&TR_RING_MASK];
+            ch = tr->mRing[tr->mOut&TRRingMask];
             if(!isdigit(ch)) break;
             if(len < 64)
                 temp[len] = ch;
@@ -445,7 +455,7 @@ static int TrReadFloat(TokenReaderT *tr, const double loBound, const double hiBo
         col = tr->mColumn;
         std::array<char,64+1> temp{};
         uint len{0};
-        char ch{tr->mRing[tr->mOut&TR_RING_MASK]};
+        char ch{tr->mRing[tr->mOut&TRRingMask]};
         if(ch == '+' || ch == '-')
         {
             temp[len] = ch;
@@ -456,7 +466,7 @@ static int TrReadFloat(TokenReaderT *tr, const double loBound, const double hiBo
         uint digis{0};
         while(TrLoad(tr))
         {
-            ch = tr->mRing[tr->mOut&TR_RING_MASK];
+            ch = tr->mRing[tr->mOut&TRRingMask];
             if(!isdigit(ch)) break;
             if(len < 64)
                 temp[len] = ch;
@@ -473,7 +483,7 @@ static int TrReadFloat(TokenReaderT *tr, const double loBound, const double hiBo
         }
         while(TrLoad(tr))
         {
-            ch = tr->mRing[tr->mOut&TR_RING_MASK];
+            ch = tr->mRing[tr->mOut&TRRingMask];
             if(!isdigit(ch)) break;
             if(len < 64)
                 temp[len] = ch;
@@ -499,7 +509,7 @@ static int TrReadFloat(TokenReaderT *tr, const double loBound, const double hiBo
                 }
                 while(TrLoad(tr))
                 {
-                    ch = tr->mRing[tr->mOut&TR_RING_MASK];
+                    ch = tr->mRing[tr->mOut&TRRingMask];
                     if(!isdigit(ch)) break;
                     if(len < 64)
                         temp[len] = ch;
@@ -543,14 +553,14 @@ static int TrReadString(TokenReaderT *tr, const uint maxLen, char *text)
     if(TrSkipWhitespace(tr))
     {
         col = tr->mColumn;
-        ch = tr->mRing[tr->mOut&TR_RING_MASK];
+        ch = tr->mRing[tr->mOut&TRRingMask];
         if(ch == '\"')
         {
             tr->mOut++;
             len = 0;
             while(TrLoad(tr))
             {
-                ch = tr->mRing[tr->mOut&TR_RING_MASK];
+                ch = tr->mRing[tr->mOut&TRRingMask];
                 tr->mOut++;
                 if(ch == '\"')
                     break;
@@ -596,7 +606,7 @@ static int TrReadOperator(TokenReaderT *tr, const char *op)
         len = 0;
         while(op[len] != '\0' && TrLoad(tr))
         {
-            ch = tr->mRing[tr->mOut&TR_RING_MASK];
+            ch = tr->mRing[tr->mOut&TRRingMask];
             if(ch != op[len]) break;
             len++;
             tr->mOut++;
@@ -901,7 +911,8 @@ static int ReadWaveList(std::istream &istream, const SourceRefT *src, const Byte
                 fprintf(stderr, "\nError: Bad read from file '%s'.\n", src->mPath.data());
                 return 0;
             }
-            istream.seekg(static_cast<long>(src->mOffset * block), std::ios::cur);
+            using off_type = std::istream::off_type;
+            istream.seekg(off_type(src->mOffset) * off_type(block), std::ios::cur);
             if(!ReadWaveData(istream, src, order, n, &hrir[0]))
                 return 0;
             return 1;
@@ -933,7 +944,8 @@ static int ReadWaveList(std::istream &istream, const SourceRefT *src, const Byte
             count = chunkSize / block;
             if(count > skip)
             {
-                istream.seekg(static_cast<long>(skip * block), std::ios::cur);
+                using off_type = std::istream::off_type;
+                istream.seekg(off_type(skip) * off_type(block), std::ios::cur);
                 chunkSize -= skip * block;
                 count -= skip;
                 skip = 0;
@@ -1065,15 +1077,39 @@ static int LoadWaveSource(std::istream &istream, SourceRefT *src, const uint hri
 }
 
 
+namespace {
+
+struct SofaEasyDeleter {
+    void operator()(gsl::owner<MYSOFA_EASY*> sofa)
+    {
+        if(sofa->neighborhood) mysofa_neighborhood_free(sofa->neighborhood);
+        if(sofa->lookup) mysofa_lookup_free(sofa->lookup);
+        if(sofa->hrtf) mysofa_free(sofa->hrtf);
+        delete sofa;
+    }
+};
+using SofaEasyPtr = std::unique_ptr<MYSOFA_EASY,SofaEasyDeleter>;
+
+struct SofaCacheEntry {
+    std::string mName;
+    uint mSampleRate{};
+    SofaEasyPtr mSofa;
+};
+std::vector<SofaCacheEntry> gSofaCache;
+
+} // namespace
 
 // Load a Spatially Oriented Format for Accoustics (SOFA) file.
 static MYSOFA_EASY* LoadSofaFile(SourceRefT *src, const uint hrirRate, const uint n)
 {
-    MYSOFA_EASY *sofa{mysofa_cache_lookup(src->mPath.data(), static_cast<float>(hrirRate))};
-    if(sofa) return sofa;
+    const std::string_view srcname{src->mPath.data()};
+    auto iter = std::find_if(gSofaCache.begin(), gSofaCache.end(),
+        [srcname,hrirRate](SofaCacheEntry &entry) -> bool
+        { return entry.mName == srcname && entry.mSampleRate == hrirRate; });
+    if(iter != gSofaCache.end()) return iter->mSofa.get();
 
-    sofa = static_cast<MYSOFA_EASY*>(calloc(1, sizeof(*sofa)));
-    if(sofa == nullptr)
+    SofaEasyPtr sofa{new(std::nothrow) MYSOFA_EASY{}};
+    if(!sofa)
     {
         fprintf(stderr, "\nError:  Out of memory.\n");
         return nullptr;
@@ -1085,23 +1121,22 @@ static MYSOFA_EASY* LoadSofaFile(SourceRefT *src, const uint hrirRate, const uin
     sofa->hrtf = mysofa_load(src->mPath.data(), &err);
     if(!sofa->hrtf)
     {
-        mysofa_close(sofa);
-        fprintf(stderr, "\nError: Could not load source file '%s'.\n", src->mPath.data());
+        fprintf(stderr, "\nError: Could not load source file '%s' (error: %d).\n",
+            src->mPath.data(), err);
         return nullptr;
     }
     /* NOTE: Some valid SOFA files are failing this check. */
     err = mysofa_check(sofa->hrtf);
     if(err != MYSOFA_OK)
-        fprintf(stderr, "\nWarning: Supposedly malformed source file '%s'.\n", src->mPath.data());
+        fprintf(stderr, "\nWarning: Supposedly malformed source file '%s' (error: %d).\n",
+            src->mPath.data(), err);
     if((src->mOffset + n) > sofa->hrtf->N)
     {
-        mysofa_close(sofa);
         fprintf(stderr, "\nError: Not enough samples in SOFA file '%s'.\n", src->mPath.data());
         return nullptr;
     }
     if(src->mChannel >= sofa->hrtf->R)
     {
-        mysofa_close(sofa);
         fprintf(stderr, "\nError: Missing source receiver in SOFA file '%s'.\n",src->mPath.data());
         return nullptr;
     }
@@ -1109,11 +1144,11 @@ static MYSOFA_EASY* LoadSofaFile(SourceRefT *src, const uint hrirRate, const uin
     sofa->lookup = mysofa_lookup_init(sofa->hrtf);
     if(sofa->lookup == nullptr)
     {
-        mysofa_close(sofa);
         fprintf(stderr, "\nError:  Out of memory.\n");
         return nullptr;
     }
-    return mysofa_cache_store(sofa, src->mPath.data(), static_cast<float>(hrirRate));
+    gSofaCache.emplace_back(SofaCacheEntry{std::string{srcname}, hrirRate, std::move(sofa)});
+    return gSofaCache.back().mSofa.get();
 }
 
 // Copies the HRIR data from a particular SOFA measurement.
@@ -1148,7 +1183,7 @@ static int LoadSofaSource(SourceRefT *src, const uint hrirRate, const uint n, do
         return 0;
     }
 
-    al::span<float,3> coords{&sofa->hrtf->SourcePosition.values[3 * nearest], 3};
+    al::span<float,3> coords{&sofa->hrtf->SourcePosition.values[3_z * nearest], 3};
     if(std::abs(coords[0] - target[0]) > 0.001 || std::abs(coords[1] - target[1]) > 0.001
         || std::abs(coords[2] - target[2]) > 0.001)
     {
@@ -1225,7 +1260,7 @@ static int ProcessMetrics(TokenReaderT *tr, const uint fftSize, const uint trunc
 {
     int hasRate = 0, hasType = 0, hasPoints = 0, hasRadius = 0;
     int hasDistance = 0, hasAzimuths = 0;
-    std::array<char,MAX_IDENT_LEN+1> ident;
+    std::array<char,MaxIdentLen+1> ident;
     uint line, col;
     double fpVal;
     uint points;
@@ -1240,7 +1275,7 @@ static int ProcessMetrics(TokenReaderT *tr, const uint fftSize, const uint trunc
     while(TrIsIdent(tr))
     {
         TrIndication(tr, &line, &col);
-        if(!TrReadIdent(tr, MAX_IDENT_LEN, ident.data()))
+        if(!TrReadIdent(tr, MaxIdentLen, ident.data()))
             return 0;
         if(al::strcasecmp(ident.data(), "rate") == 0)
         {
@@ -1258,7 +1293,7 @@ static int ProcessMetrics(TokenReaderT *tr, const uint fftSize, const uint trunc
         }
         else if(al::strcasecmp(ident.data(), "type") == 0)
         {
-            std::array<char,MAX_IDENT_LEN+1> type;
+            std::array<char,MaxIdentLen+1> type;
 
             if(hasType)
             {
@@ -1268,7 +1303,7 @@ static int ProcessMetrics(TokenReaderT *tr, const uint fftSize, const uint trunc
             if(!TrReadOperator(tr, "="))
                 return 0;
 
-            if(!TrReadIdent(tr, MAX_IDENT_LEN, type.data()))
+            if(!TrReadIdent(tr, MaxIdentLen, type.data()))
                 return 0;
             hData->mChannelType = MatchChannelType(type.data());
             if(hData->mChannelType == CT_NONE)
@@ -1322,7 +1357,7 @@ static int ProcessMetrics(TokenReaderT *tr, const uint fftSize, const uint trunc
             }
             if(!TrReadOperator(tr, "="))
                 return 0;
-            if(!TrReadFloat(tr, MIN_RADIUS, MAX_RADIUS, &fpVal))
+            if(!TrReadFloat(tr, MinRadius, MaxRadius, &fpVal))
                 return 0;
             hData->mRadius = fpVal;
             hasRadius = 1;
@@ -1511,13 +1546,13 @@ static ElementTypeT MatchElementType(const char *ident)
 // Parse and validate a source reference from the data set definition.
 static int ReadSourceRef(TokenReaderT *tr, SourceRefT *src)
 {
-    std::array<char,MAX_IDENT_LEN+1> ident;
+    std::array<char,MaxIdentLen+1> ident;
     uint line, col;
     double fpVal;
     int intVal;
 
     TrIndication(tr, &line, &col);
-    if(!TrReadIdent(tr, MAX_IDENT_LEN, ident.data()))
+    if(!TrReadIdent(tr, MaxIdentLen, ident.data()))
         return 0;
     src->mFormat = MatchSourceFormat(ident.data());
     if(src->mFormat == SF_NONE)
@@ -1544,7 +1579,7 @@ static int ReadSourceRef(TokenReaderT *tr, SourceRefT *src)
         src->mAzimuth = fpVal;
         if(!TrReadOperator(tr, ":"))
             return 0;
-        if(!TrReadInt(tr, 0, MAX_WAVE_CHANNELS, &intVal))
+        if(!TrReadInt(tr, 0, MaxWaveChannels, &intVal))
             return 0;
         src->mType = ET_NONE;
         src->mSize = 0;
@@ -1554,7 +1589,7 @@ static int ReadSourceRef(TokenReaderT *tr, SourceRefT *src)
     }
     else if(src->mFormat == SF_WAVE)
     {
-        if(!TrReadInt(tr, 0, MAX_WAVE_CHANNELS, &intVal))
+        if(!TrReadInt(tr, 0, MaxWaveChannels, &intVal))
             return 0;
         src->mType = ET_NONE;
         src->mSize = 0;
@@ -1565,7 +1600,7 @@ static int ReadSourceRef(TokenReaderT *tr, SourceRefT *src)
     else
     {
         TrIndication(tr, &line, &col);
-        if(!TrReadIdent(tr, MAX_IDENT_LEN, ident.data()))
+        if(!TrReadIdent(tr, MaxIdentLen, ident.data()))
             return 0;
         src->mType = MatchElementType(ident.data());
         if(src->mType == ET_NONE)
@@ -1579,7 +1614,7 @@ static int ReadSourceRef(TokenReaderT *tr, SourceRefT *src)
                 return 0;
             if(src->mType == ET_INT)
             {
-                if(!TrReadInt(tr, MIN_BIN_SIZE, MAX_BIN_SIZE, &intVal))
+                if(!TrReadInt(tr, MinBinSize, MaxBinSize, &intVal))
                     return 0;
                 src->mSize = static_cast<uint>(intVal);
                 if(!TrIsOperator(tr, ","))
@@ -1590,9 +1625,9 @@ static int ReadSourceRef(TokenReaderT *tr, SourceRefT *src)
                     TrIndication(tr, &line, &col);
                     if(!TrReadInt(tr, -2147483647-1, 2147483647, &intVal))
                         return 0;
-                    if(std::abs(intVal) < MIN_BIN_BITS || static_cast<uint>(std::abs(intVal)) > (8*src->mSize))
+                    if(std::abs(intVal) < int{MinBinSize}*8 || static_cast<uint>(std::abs(intVal)) > (8*src->mSize))
                     {
-                        TrErrorAt(tr, line, col, "Expected a value of (+/-) %d to %d.\n", MIN_BIN_BITS, 8*src->mSize);
+                        TrErrorAt(tr, line, col, "Expected a value of (+/-) %d to %d.\n", MinBinSize*8, 8*src->mSize);
                         return 0;
                     }
                     src->mBits = intVal;
@@ -1616,7 +1651,7 @@ static int ReadSourceRef(TokenReaderT *tr, SourceRefT *src)
         {
             if(!TrReadOperator(tr, ","))
                 return 0;
-            if(!TrReadInt(tr, MIN_ASCII_BITS, MAX_ASCII_BITS, &intVal))
+            if(!TrReadInt(tr, MinASCIIBits, MaxASCIIBits, &intVal))
                 return 0;
             src->mSize = 0;
             src->mBits = intVal;
@@ -1658,12 +1693,12 @@ static int ReadSourceRef(TokenReaderT *tr, SourceRefT *src)
 // Parse and validate a SOFA source reference from the data set definition.
 static int ReadSofaRef(TokenReaderT *tr, SourceRefT *src)
 {
-    std::array<char,MAX_IDENT_LEN+1> ident;
+    std::array<char,MaxIdentLen+1> ident;
     uint line, col;
     int intVal;
 
     TrIndication(tr, &line, &col);
-    if(!TrReadIdent(tr, MAX_IDENT_LEN, ident.data()))
+    if(!TrReadIdent(tr, MaxIdentLen, ident.data()))
         return 0;
     src->mFormat = MatchSourceFormat(ident.data());
     if(src->mFormat != SF_SOFA)
@@ -1740,12 +1775,12 @@ static void AverageHrirMagnitude(const uint points, const uint n, const double *
 static int ProcessSources(TokenReaderT *tr, HrirDataT *hData, const uint outRate)
 {
     const uint channels{(hData->mChannelType == CT_STEREO) ? 2u : 1u};
-    hData->mHrirsBase.resize(channels * hData->mIrCount * hData->mIrSize);
+    hData->mHrirsBase.resize(size_t{channels} * hData->mIrCount * hData->mIrSize);
     double *hrirs = hData->mHrirsBase.data();
     auto hrir = std::vector<double>(hData->mIrSize);
     uint line, col, fi, ei, ai;
 
-    std::vector<double> onsetSamples(OnsetRateMultiple * hData->mIrPoints);
+    std::vector<double> onsetSamples(size_t{OnsetRateMultiple} * hData->mIrPoints);
     PPhaseResampler onsetResampler;
     onsetResampler.init(hData->mIrRate, OnsetRateMultiple*hData->mIrRate);
 
@@ -1780,9 +1815,9 @@ static int ProcessSources(TokenReaderT *tr, HrirDataT *hData, const uint outRate
 
             if(hData->mChannelType == CT_STEREO)
             {
-                std::array<char,MAX_IDENT_LEN+1> type{};
+                std::array<char,MaxIdentLen+1> type{};
 
-                if(!TrReadIdent(tr, MAX_IDENT_LEN, type.data()))
+                if(!TrReadIdent(tr, MaxIdentLen, type.data()))
                     return 0;
 
                 const ChannelTypeT channelType{MatchChannelType(type.data())};
@@ -1801,8 +1836,8 @@ static int ProcessSources(TokenReaderT *tr, HrirDataT *hData, const uint outRate
             }
             else
             {
-                std::array<char,MAX_IDENT_LEN+1> type{};
-                if(!TrReadIdent(tr, MAX_IDENT_LEN, type.data()))
+                std::array<char,MaxIdentLen+1> type{};
+                if(!TrReadIdent(tr, MaxIdentLen, type.data()))
                     return 0;
 
                 ChannelTypeT channelType{MatchChannelType(type.data())};
@@ -1823,9 +1858,9 @@ static int ProcessSources(TokenReaderT *tr, HrirDataT *hData, const uint outRate
                 fflush(stdout);
 
                 std::array aer{
-                    sofa->hrtf->SourcePosition.values[3*si],
-                    sofa->hrtf->SourcePosition.values[3*si + 1],
-                    sofa->hrtf->SourcePosition.values[3*si + 2]
+                    sofa->hrtf->SourcePosition.values[3_uz*si],
+                    sofa->hrtf->SourcePosition.values[3_uz*si + 1],
+                    sofa->hrtf->SourcePosition.values[3_uz*si + 2]
                 };
                 mysofa_c2s(aer.data());
 
@@ -1864,7 +1899,7 @@ static int ProcessSources(TokenReaderT *tr, HrirDataT *hData, const uint outRate
                 }
 
                 ExtractSofaHrir(sofa, si, 0, src.mOffset, hData->mIrPoints, hrir.data());
-                azd->mIrs[0] = &hrirs[hData->mIrSize * azd->mIndex];
+                azd->mIrs[0] = &hrirs[size_t{hData->mIrSize} * azd->mIndex];
                 azd->mDelays[0] = AverageHrirOnset(onsetResampler, onsetSamples, hData->mIrRate,
                     hData->mIrPoints, hrir.data(), 1.0, azd->mDelays[0]);
                 if(resampler)
@@ -1874,7 +1909,7 @@ static int ProcessSources(TokenReaderT *tr, HrirDataT *hData, const uint outRate
                 if(src.mChannel == 1)
                 {
                     ExtractSofaHrir(sofa, si, 1, src.mOffset, hData->mIrPoints, hrir.data());
-                    azd->mIrs[1] = &hrirs[hData->mIrSize * (hData->mIrCount + azd->mIndex)];
+                    azd->mIrs[1] = &hrirs[hData->mIrSize * (size_t{hData->mIrCount}+azd->mIndex)];
                     azd->mDelays[1] = AverageHrirOnset(onsetResampler, onsetSamples,
                         hData->mIrRate, hData->mIrPoints, hrir.data(), 1.0, azd->mDelays[1]);
                     if(resampler)
@@ -1925,8 +1960,8 @@ static int ProcessSources(TokenReaderT *tr, HrirDataT *hData, const uint outRate
             uint ti{0};
             if(hData->mChannelType == CT_STEREO)
             {
-                std::array<char,MAX_IDENT_LEN+1> ident{};
-                if(!TrReadIdent(tr, MAX_IDENT_LEN, ident.data()))
+                std::array<char,MaxIdentLen+1> ident{};
+                if(!TrReadIdent(tr, MaxIdentLen, ident.data()))
                     return 0;
                 ti = static_cast<uint>(MatchTargetEar(ident.data()));
                 if(static_cast<int>(ti) < 0)
@@ -1935,7 +1970,7 @@ static int ProcessSources(TokenReaderT *tr, HrirDataT *hData, const uint outRate
                     return 0;
                 }
             }
-            azd->mIrs[ti] = &hrirs[hData->mIrSize * (ti * hData->mIrCount + azd->mIndex)];
+            azd->mIrs[ti] = &hrirs[hData->mIrSize * (ti*size_t{hData->mIrCount} + azd->mIndex)];
             azd->mDelays[ti] = AverageHrirOnset(onsetResampler, onsetSamples, hData->mIrRate,
                 hData->mIrPoints, hrir.data(), 1.0 / factor[ti], azd->mDelays[ti]);
             if(resampler)
@@ -2012,19 +2047,19 @@ static int ProcessSources(TokenReaderT *tr, HrirDataT *hData, const uint outRate
                 {
                     HrirAzT *azd = &hData->mFds[fi].mEvs[ei].mAzs[ai];
 
-                    azd->mIrs[ti] = &hrirs[hData->mIrSize * (ti * hData->mIrCount + azd->mIndex)];
+                    azd->mIrs[ti] = &hrirs[hData->mIrSize * (ti*size_t{hData->mIrCount} + azd->mIndex)];
                 }
             }
         }
     }
     if(!TrLoad(tr))
     {
-        mysofa_cache_release_all();
+        gSofaCache.clear();
         return 1;
     }
 
     TrError(tr, "Errant data at end of source list.\n");
-    mysofa_cache_release_all();
+    gSofaCache.clear();
     return 0;
 }
 

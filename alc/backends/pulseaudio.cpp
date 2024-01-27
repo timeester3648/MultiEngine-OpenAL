@@ -28,12 +28,12 @@
 #include <atomic>
 #include <bitset>
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <mutex>
 #include <optional>
-#include <stdint.h>
-#include <stdlib.h>
 #include <string>
 #include <sys/types.h>
 #include <utility>
@@ -320,11 +320,12 @@ public:
 
     explicit operator bool() const noexcept { return mLoop != nullptr; }
 
+    [[nodiscard]]
     auto start() const { return pa_threaded_mainloop_start(mLoop); }
     auto stop() const { return pa_threaded_mainloop_stop(mLoop); }
 
-    auto getApi() const { return pa_threaded_mainloop_get_api(mLoop); }
-    auto getContext() const noexcept { return mContext; }
+    [[nodiscard]] auto getApi() const { return pa_threaded_mainloop_get_api(mLoop); }
+    [[nodiscard]] auto getContext() const noexcept { return mContext; }
 
     auto lock() const { return pa_threaded_mainloop_lock(mLoop); }
     auto unlock() const { return pa_threaded_mainloop_unlock(mLoop); }
@@ -488,7 +489,7 @@ PulseMainloop::~PulseMainloop()
 {
     if(mContext)
     {
-        MainloopUniqueLock _{*this};
+        MainloopUniqueLock looplock{*this};
         pa_context_disconnect(mContext);
         pa_context_unref(mContext);
     }
@@ -509,21 +510,20 @@ void MainloopUniqueLock::connectContext()
     pa_context_set_state_callback(mutex()->mContext, [](pa_context *ctx, void *pdata) noexcept
     { return static_cast<MainloopUniqueLock*>(pdata)->contextStateCallback(ctx); }, this);
 
-    int err;
-    if((err=pa_context_connect(mutex()->mContext, nullptr, pulse_ctx_flags, nullptr)) >= 0)
+    int err{pa_context_connect(mutex()->mContext, nullptr, pulse_ctx_flags, nullptr)};
+    if(err >= 0)
     {
-        pa_context_state_t state;
-        while((state=pa_context_get_state(mutex()->mContext)) != PA_CONTEXT_READY)
+        wait([&err,this]()
         {
+            pa_context_state_t state{pa_context_get_state(mutex()->mContext)};
             if(!PA_CONTEXT_IS_GOOD(state))
             {
                 err = pa_context_errno(mutex()->mContext);
-                if(err > 0)  err = -err;
-                break;
+                if(err > 0) err = -err;
+                return true;
             }
-
-            wait();
-        }
+            return state == PA_CONTEXT_READY;
+        });
     }
     pa_context_set_state_callback(mutex()->mContext, nullptr, nullptr);
 
@@ -558,9 +558,9 @@ pa_stream *MainloopUniqueLock::connectStream(const char *device_name, pa_stream_
             stream_id, pa_strerror(err)};
     }
 
-    pa_stream_state_t state;
-    while((state=pa_stream_get_state(stream)) != PA_STREAM_READY)
+    wait([&err,stream,stream_id,this]()
     {
+        pa_stream_state_t state{pa_stream_get_state(stream)};
         if(!PA_STREAM_IS_GOOD(state))
         {
             err = pa_context_errno(mutex()->mContext);
@@ -568,9 +568,9 @@ pa_stream *MainloopUniqueLock::connectStream(const char *device_name, pa_stream_
             throw al::backend_exception{al::backend_error::DeviceError,
                 "%s did not get ready (%s)", stream_id, pa_strerror(err)};
         }
+        return state == PA_STREAM_READY;
+    });
 
-        wait();
-    }
     pa_stream_set_state_callback(stream, nullptr, nullptr);
 
     return stream;
@@ -581,7 +581,7 @@ void PulseMainloop::close(pa_stream *stream)
     if(!stream)
         return;
 
-    MainloopUniqueLock _{*this};
+    MainloopUniqueLock looplock{*this};
     pa_stream_set_state_callback(stream, nullptr, nullptr);
     pa_stream_set_moved_callback(stream, nullptr, nullptr);
     pa_stream_set_write_callback(stream, nullptr, nullptr);
@@ -657,14 +657,12 @@ struct PulsePlayback final : public BackendBase {
     std::optional<std::string> mDeviceName{std::nullopt};
 
     bool mIs51Rear{false};
-    pa_buffer_attr mAttr;
-    pa_sample_spec mSpec;
+    pa_buffer_attr mAttr{};
+    pa_sample_spec mSpec{};
 
     pa_stream *mStream{nullptr};
 
     uint mFrameSize{0u};
-
-    DEF_NEWDEL(PulsePlayback)
 };
 
 PulsePlayback::~PulsePlayback()
@@ -753,9 +751,9 @@ void PulsePlayback::sinkInfoCallback(pa_context*, const pa_sink_info *info, int 
     else
     {
         mIs51Rear = false;
-        char chanmap_str[PA_CHANNEL_MAP_SNPRINT_MAX]{};
-        pa_channel_map_snprint(chanmap_str, sizeof(chanmap_str), &info->channel_map);
-        WARN("Failed to find format for channel map:\n    %s\n", chanmap_str);
+        std::array<char,PA_CHANNEL_MAP_SNPRINT_MAX> chanmap_str{};
+        pa_channel_map_snprint(chanmap_str.data(), chanmap_str.size(), &info->channel_map);
+        WARN("Failed to find format for channel map:\n    %s\n", chanmap_str.data());
     }
 
     if(info->active_port)
@@ -784,7 +782,9 @@ void PulsePlayback::streamMovedCallback(pa_stream *stream) noexcept
 void PulsePlayback::open(std::string_view name)
 {
     mMainloop = PulseMainloop::Create();
-    mMainloop.start();
+    if(mMainloop.start() != 0)
+        throw al::backend_exception{al::backend_error::DeviceError,
+            "Failed to start device mainloop"};
 
     const char *pulse_name{nullptr};
     const char *dev_name{nullptr};
@@ -807,7 +807,7 @@ void PulsePlayback::open(std::string_view name)
 
     pa_stream_flags_t flags{PA_STREAM_START_CORKED | PA_STREAM_FIX_FORMAT | PA_STREAM_FIX_RATE |
         PA_STREAM_FIX_CHANNELS};
-    if(!GetConfigValueBool(nullptr, "pulse", "allow-moves", true))
+    if(!GetConfigValueBool({}, "pulse", "allow-moves", true))
         flags |= PA_STREAM_DONT_MOVE;
 
     pa_sample_spec spec{};
@@ -866,9 +866,9 @@ bool PulsePlayback::reset()
 
     pa_stream_flags_t flags{PA_STREAM_START_CORKED | PA_STREAM_INTERPOLATE_TIMING |
         PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_EARLY_REQUESTS};
-    if(!GetConfigValueBool(nullptr, "pulse", "allow-moves", true))
+    if(!GetConfigValueBool({}, "pulse", "allow-moves", true))
         flags |= PA_STREAM_DONT_MOVE;
-    if(GetConfigValueBool(mDevice->DeviceName.c_str(), "pulse", "adjust-latency", false))
+    if(GetConfigValueBool(mDevice->DeviceName, "pulse", "adjust-latency", false))
     {
         /* ADJUST_LATENCY can't be specified with EARLY_REQUESTS, for some
          * reason. So if the user wants to adjust the overall device latency,
@@ -877,7 +877,7 @@ bool PulsePlayback::reset()
         flags &= ~PA_STREAM_EARLY_REQUESTS;
         flags |= PA_STREAM_ADJUST_LATENCY;
     }
-    if(GetConfigValueBool(mDevice->DeviceName.c_str(), "pulse", "fix-rate", false)
+    if(GetConfigValueBool(mDevice->DeviceName, "pulse", "fix-rate", false)
         || !mDevice->Flags.test(FrequencyRequest))
         flags |= PA_STREAM_FIX_RATE;
 
@@ -967,8 +967,9 @@ bool PulsePlayback::reset()
         const auto scale = static_cast<double>(mSpec.rate) / mDevice->Frequency;
         const auto perlen = static_cast<uint>(clampd(scale*mDevice->UpdateSize + 0.5, 64.0,
             8192.0));
-        const auto buflen = static_cast<uint>(clampd(scale*mDevice->BufferSize + 0.5, perlen*2,
-            std::numeric_limits<int>::max()/mFrameSize));
+        const auto bufmax = uint{std::numeric_limits<int>::max() / mFrameSize};
+        const auto buflen = static_cast<uint>(clampd(scale*mDevice->BufferSize + 0.5, perlen*2.0,
+            bufmax));
 
         mAttr.maxlength = ~0u;
         mAttr.tlength = buflen * mFrameSize;
@@ -1029,8 +1030,8 @@ void PulsePlayback::stop()
 ClockLatency PulsePlayback::getClockLatency()
 {
     ClockLatency ret;
-    pa_usec_t latency;
-    int neg, err;
+    pa_usec_t latency{};
+    int neg{}, err{};
 
     {
         MainloopUniqueLock plock{mMainloop};
@@ -1087,8 +1088,6 @@ struct PulseCapture final : public BackendBase {
     pa_sample_spec mSpec{};
 
     pa_stream *mStream{nullptr};
-
-    DEF_NEWDEL(PulseCapture)
 };
 
 PulseCapture::~PulseCapture()
@@ -1127,7 +1126,9 @@ void PulseCapture::open(std::string_view name)
     if(!mMainloop)
     {
         mMainloop = PulseMainloop::Create();
-        mMainloop.start();
+        if(mMainloop.start() != 0)
+            throw al::backend_exception{al::backend_error::DeviceError,
+                "Failed to start device mainloop"};
     }
 
     const char *pulse_name{nullptr};
@@ -1214,7 +1215,7 @@ void PulseCapture::open(std::string_view name)
     mAttr.fragsize = minu(samples, 50*mDevice->Frequency/1000) * frame_size;
 
     pa_stream_flags_t flags{PA_STREAM_START_CORKED | PA_STREAM_ADJUST_LATENCY};
-    if(!GetConfigValueBool(nullptr, "pulse", "allow-moves", true))
+    if(!GetConfigValueBool({}, "pulse", "allow-moves", true))
         flags |= PA_STREAM_DONT_MOVE;
 
     TRACE("Connecting to \"%s\"\n", pulse_name ? pulse_name : "(default)");
@@ -1300,8 +1301,8 @@ void PulseCapture::captureSamples(std::byte *buffer, uint samples)
             break;
         }
 
-        const void *capbuf;
-        size_t caplen;
+        const void *capbuf{};
+        size_t caplen{};
         if(pa_stream_peek(mStream, &capbuf, &caplen) < 0) UNLIKELY
         {
             mDevice->handleDisconnect("Failed retrieving capture samples: %s",
@@ -1357,8 +1358,8 @@ uint PulseCapture::availableSamples()
 ClockLatency PulseCapture::getClockLatency()
 {
     ClockLatency ret;
-    pa_usec_t latency;
-    int neg, err;
+    pa_usec_t latency{};
+    int neg{}, err{};
 
     {
         MainloopUniqueLock plock{mMainloop};
@@ -1387,9 +1388,6 @@ bool PulseBackendFactory::init()
 #ifdef HAVE_DYNLOAD
     if(!pulse_handle)
     {
-        bool ret{true};
-        std::string missing_funcs;
-
 #ifdef _WIN32
 #define PALIB "libpulse-0.dll"
 #elif defined(__APPLE__) && defined(__MACH__)
@@ -1404,17 +1402,15 @@ bool PulseBackendFactory::init()
             return false;
         }
 
+        std::string missing_funcs;
 #define LOAD_FUNC(x) do {                                                     \
-    p##x = al::bit_cast<decltype(p##x)>(GetSymbol(pulse_handle, #x));         \
-    if(!(p##x)) {                                                             \
-        ret = false;                                                          \
-        missing_funcs += "\n" #x;                                             \
-    }                                                                         \
+    p##x = reinterpret_cast<decltype(p##x)>(GetSymbol(pulse_handle, #x));     \
+    if(!(p##x)) missing_funcs += "\n" #x;                                     \
 } while(0)
         PULSE_FUNCS(LOAD_FUNC)
 #undef LOAD_FUNC
 
-        if(!ret)
+        if(!missing_funcs.empty())
         {
             WARN("Missing expected functions:%s\n", missing_funcs.c_str());
             CloseLib(pulse_handle);
@@ -1425,14 +1421,18 @@ bool PulseBackendFactory::init()
 #endif /* HAVE_DYNLOAD */
 
     pulse_ctx_flags = PA_CONTEXT_NOFLAGS;
-    if(!GetConfigValueBool(nullptr, "pulse", "spawn-server", false))
+    if(!GetConfigValueBool({}, "pulse", "spawn-server", false))
         pulse_ctx_flags |= PA_CONTEXT_NOAUTOSPAWN;
 
     try {
         if(!gGlobalMainloop)
         {
             gGlobalMainloop = PulseMainloop::Create();
-            gGlobalMainloop.start();
+            if(gGlobalMainloop.start() != 0)
+            {
+                gGlobalMainloop = nullptr;
+                return false;
+            }
         }
 
         MainloopUniqueLock plock{gGlobalMainloop};

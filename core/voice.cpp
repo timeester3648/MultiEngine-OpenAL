@@ -64,6 +64,7 @@ namespace {
 
 using uint = unsigned int;
 using namespace std::chrono;
+using namespace std::string_view_literals;
 
 using HrtfMixerFunc = void(*)(const float *InSamples, float2 *AccumSamples, const uint IrSize,
     const MixHrtfFilter *hrtfparams, const size_t BufferSize);
@@ -128,42 +129,43 @@ inline HrtfMixerBlendFunc SelectHrtfBlendMixer()
 
 } // namespace
 
-void Voice::InitMixer(std::optional<std::string> resampler)
+void Voice::InitMixer(std::optional<std::string> resopt)
 {
-    if(resampler)
+    if(resopt)
     {
         struct ResamplerEntry {
-            const char *name;
+            const std::string_view name;
             const Resampler resampler;
         };
         constexpr std::array ResamplerList{
-            ResamplerEntry{"none", Resampler::Point},
-            ResamplerEntry{"point", Resampler::Point},
-            ResamplerEntry{"linear", Resampler::Linear},
-            ResamplerEntry{"cubic", Resampler::Cubic},
-            ResamplerEntry{"bsinc12", Resampler::BSinc12},
-            ResamplerEntry{"fast_bsinc12", Resampler::FastBSinc12},
-            ResamplerEntry{"bsinc24", Resampler::BSinc24},
-            ResamplerEntry{"fast_bsinc24", Resampler::FastBSinc24},
+            ResamplerEntry{"none"sv, Resampler::Point},
+            ResamplerEntry{"point"sv, Resampler::Point},
+            ResamplerEntry{"linear"sv, Resampler::Linear},
+            ResamplerEntry{"cubic"sv, Resampler::Cubic},
+            ResamplerEntry{"bsinc12"sv, Resampler::BSinc12},
+            ResamplerEntry{"fast_bsinc12"sv, Resampler::FastBSinc12},
+            ResamplerEntry{"bsinc24"sv, Resampler::BSinc24},
+            ResamplerEntry{"fast_bsinc24"sv, Resampler::FastBSinc24},
         };
 
-        const char *str{resampler->c_str()};
-        if(al::strcasecmp(str, "bsinc") == 0)
+        std::string_view resampler{*resopt};
+        if(al::case_compare(resampler, "bsinc"sv) == 0)
         {
-            WARN("Resampler option \"%s\" is deprecated, using bsinc12\n", str);
-            str = "bsinc12";
+            WARN("Resampler option \"%s\" is deprecated, using bsinc12\n", resopt->c_str());
+            resampler = "bsinc12"sv;
         }
-        else if(al::strcasecmp(str, "sinc4") == 0 || al::strcasecmp(str, "sinc8") == 0)
+        else if(al::case_compare(resampler, "sinc4"sv) == 0
+            || al::case_compare(resampler, "sinc8"sv) == 0)
         {
-            WARN("Resampler option \"%s\" is deprecated, using cubic\n", str);
-            str = "cubic";
+            WARN("Resampler option \"%s\" is deprecated, using cubic\n", resopt->c_str());
+            resampler = "cubic"sv;
         }
 
         auto iter = std::find_if(ResamplerList.begin(), ResamplerList.end(),
-            [str](const ResamplerEntry &entry) -> bool
-            { return al::strcasecmp(str, entry.name) == 0; });
+            [resampler](const ResamplerEntry &entry) -> bool
+            { return al::case_compare(resampler, entry.name) == 0; });
         if(iter == ResamplerList.end())
-            ERR("Invalid resampler: %s\n", str);
+            ERR("Invalid resampler: %s\n", resopt->c_str());
         else
             ResamplerDefault = iter->resampler;
     }
@@ -595,16 +597,16 @@ void DoHrtfMix(const float *samples, const uint DstBufferSize, DirectParams &par
     DeviceBase *Device)
 {
     const uint IrSize{Device->mIrSize};
-    auto &HrtfSamples = Device->HrtfSourceData;
-    auto &AccumSamples = Device->HrtfAccumData;
+    const auto HrtfSamples = al::span{Device->ExtraSampleData};
+    const auto AccumSamples = al::span{Device->HrtfAccumData};
 
     /* Copy the HRTF history and new input samples into a temp buffer. */
     auto src_iter = std::copy(parms.Hrtf.History.begin(), parms.Hrtf.History.end(),
-        std::begin(HrtfSamples));
+        HrtfSamples.begin());
     std::copy_n(samples, DstBufferSize, src_iter);
     /* Copy the last used samples back into the history buffer for later. */
     if(IsPlaying) LIKELY
-        std::copy_n(std::begin(HrtfSamples) + DstBufferSize, parms.Hrtf.History.size(),
+        std::copy_n(HrtfSamples.begin() + DstBufferSize, parms.Hrtf.History.size(),
             parms.Hrtf.History.begin());
 
     /* If fading and this is the first mixing pass, fade between the IRs. */
@@ -679,7 +681,7 @@ void DoNfcMix(const al::span<const float> samples, FloatBufferLine *OutBuffer, D
     ++CurrentGains;
     ++TargetGains;
 
-    const al::span<float> nfcsamples{Device->NfcSampleData.data(), samples.size()};
+    const auto nfcsamples = al::span{Device->ExtraSampleData.begin(), samples.size()};
     size_t order{1};
     while(const size_t chancount{Device->NumChannelsPerOrder[order]})
     {
@@ -904,8 +906,8 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
                     const size_t needBlocks{(needSamples + mSamplesPerBlock-1) / mSamplesPerBlock};
                     if(!mFlags.test(VoiceCallbackStopped) && needBlocks > mNumCallbackBlocks)
                     {
-                        const size_t byteOffset{mNumCallbackBlocks*mBytesPerBlock};
-                        const size_t needBytes{(needBlocks-mNumCallbackBlocks)*mBytesPerBlock};
+                        const size_t byteOffset{mNumCallbackBlocks*size_t{mBytesPerBlock}};
+                        const size_t needBytes{(needBlocks-mNumCallbackBlocks)*size_t{mBytesPerBlock}};
 
                         const int gotBytes{BufferListItem->mCallback(BufferListItem->mUserData,
                             &BufferListItem->mSamples[byteOffset], static_cast<int>(needBytes))};
@@ -919,7 +921,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
                         else
                             mNumCallbackBlocks = static_cast<uint>(needBlocks);
                     }
-                    const size_t numSamples{uint{mNumCallbackBlocks} * mSamplesPerBlock};
+                    const size_t numSamples{size_t{mNumCallbackBlocks} * mSamplesPerBlock};
                     LoadBufferCallback(BufferListItem, bufferOffset, numSamples, mFmtType, chan,
                         mFrameStep, srcSampleDelay, srcBufferSize, al::to_address(resampleBuffer));
                 }
@@ -954,7 +956,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
                 fracPos += dstBufferSize*increment;
                 const uint srcOffset{fracPos >> MixerFracBits};
                 fracPos &= MixerFracMask;
-                intPos += srcOffset;
+                intPos += static_cast<int>(srcOffset);
 
                 /* If more samples need to be loaded, copy the back of the
                  * resampleBuffer to the front to reuse it. prevSamples isn't
@@ -1018,7 +1020,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
 
             if(mFlags.test(VoiceHasHrtf))
             {
-                const float TargetGain{parms.Hrtf.Target.Gain * (vstate == Playing)};
+                const float TargetGain{parms.Hrtf.Target.Gain * float(vstate == Playing)};
                 DoHrtfMix(samples, samplesToMix, parms, TargetGain, Counter, OutPos,
                     (vstate == Playing), Device);
             }
@@ -1064,8 +1066,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
 
     /* Update voice positions and buffers as needed. */
     DataPosFrac += increment*samplesToMix;
-    const uint SrcSamplesDone{DataPosFrac>>MixerFracBits};
-    DataPosInt  += SrcSamplesDone;
+    DataPosInt  += static_cast<int>(DataPosFrac>>MixerFracBits);
     DataPosFrac &= MixerFracMask;
 
     uint buffers_done{0u};
@@ -1100,8 +1101,8 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
             const uint blocksDone{currentBlock - mCallbackBlockBase};
             if(blocksDone < mNumCallbackBlocks)
             {
-                const size_t byteOffset{blocksDone*mBytesPerBlock};
-                const size_t byteEnd{mNumCallbackBlocks*mBytesPerBlock};
+                const size_t byteOffset{blocksDone*size_t{mBytesPerBlock}};
+                const size_t byteEnd{mNumCallbackBlocks*size_t{mBytesPerBlock}};
                 std::byte *data{BufferListItem->mSamples};
                 std::copy(data+byteOffset, data+byteEnd, data);
                 mNumCallbackBlocks -= blocksDone;
@@ -1121,7 +1122,7 @@ void Voice::mix(const State vstate, ContextBase *Context, const nanoseconds devi
                 if(BufferListItem->mSampleLen > static_cast<uint>(DataPosInt))
                     break;
 
-                DataPosInt -= BufferListItem->mSampleLen;
+                DataPosInt -= static_cast<int>(BufferListItem->mSampleLen);
 
                 ++buffers_done;
                 BufferListItem = BufferListItem->mNext.load(std::memory_order_relaxed);

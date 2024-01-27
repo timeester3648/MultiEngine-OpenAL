@@ -174,7 +174,7 @@ BOOL APIENTRY DllMain(HINSTANCE module, DWORD reason, LPVOID /*reserved*/)
     case DLL_PROCESS_ATTACH:
         /* Pin the DLL so we won't get unloaded until the process terminates */
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-            al::bit_cast<WCHAR*>(module), &module);
+            reinterpret_cast<WCHAR*>(module), &module);
         break;
     }
     return TRUE;
@@ -183,7 +183,7 @@ BOOL APIENTRY DllMain(HINSTANCE module, DWORD reason, LPVOID /*reserved*/)
 
 namespace {
 
-using namespace std::placeholders;
+using namespace std::string_view_literals;
 using std::chrono::seconds;
 using std::chrono::nanoseconds;
 
@@ -255,23 +255,21 @@ std::array BackendList{
 BackendFactory *PlaybackFactory{};
 BackendFactory *CaptureFactory{};
 
-/* NOLINTBEGIN(*-avoid-c-arrays) */
-constexpr ALCchar alcNoError[] = "No Error";
-constexpr ALCchar alcErrInvalidDevice[] = "Invalid Device";
-constexpr ALCchar alcErrInvalidContext[] = "Invalid Context";
-constexpr ALCchar alcErrInvalidEnum[] = "Invalid Enum";
-constexpr ALCchar alcErrInvalidValue[] = "Invalid Value";
-constexpr ALCchar alcErrOutOfMemory[] = "Out of Memory";
 
+[[nodiscard]] constexpr auto GetNoErrorString() noexcept { return "No Error"; }
+[[nodiscard]] constexpr auto GetInvalidDeviceString() noexcept { return "Invalid Device"; }
+[[nodiscard]] constexpr auto GetInvalidContextString() noexcept { return "Invalid Context"; }
+[[nodiscard]] constexpr auto GetInvalidEnumString() noexcept { return "Invalid Enum"; }
+[[nodiscard]] constexpr auto GetInvalidValueString() noexcept { return "Invalid Value"; }
+[[nodiscard]] constexpr auto GetOutOfMemoryString() noexcept { return "Out of Memory"; }
+
+[[nodiscard]] constexpr auto GetDefaultName() noexcept { return "OpenAL Soft\0"; }
 
 /************************************************
  * Global variables
  ************************************************/
 
 /* Enumerated device names */
-constexpr ALCchar alcDefaultName[] = "OpenAL Soft\0";
-/* NOLINTEND(*-avoid-c-arrays) */
-
 std::string alcAllDevicesList;
 std::string alcCaptureDeviceList;
 
@@ -299,38 +297,41 @@ constexpr uint DitherRNGSeed{22222u};
 /************************************************
  * ALC information
  ************************************************/
-/* NOLINTBEGIN(*-avoid-c-arrays) */
-constexpr ALCchar alcNoDeviceExtList[] =
-    "ALC_ENUMERATE_ALL_EXT "
-    "ALC_ENUMERATION_EXT "
-    "ALC_EXT_CAPTURE "
-    "ALC_EXTX_direct_context "
-    "ALC_EXT_EFX "
-    "ALC_EXT_thread_local_context "
-    "ALC_SOFT_loopback "
-    "ALC_SOFT_loopback_bformat "
-    "ALC_SOFT_reopen_device "
-    "ALC_SOFT_system_events";
-constexpr ALCchar alcExtensionList[] =
-    "ALC_ENUMERATE_ALL_EXT "
-    "ALC_ENUMERATION_EXT "
-    "ALC_EXT_CAPTURE "
-    "ALC_EXT_debug "
-    "ALC_EXT_DEDICATED "
-    "ALC_EXTX_direct_context "
-    "ALC_EXT_disconnect "
-    "ALC_EXT_EFX "
-    "ALC_EXT_thread_local_context "
-    "ALC_SOFT_device_clock "
-    "ALC_SOFT_HRTF "
-    "ALC_SOFT_loopback "
-    "ALC_SOFT_loopback_bformat "
-    "ALC_SOFT_output_limiter "
-    "ALC_SOFT_output_mode "
-    "ALC_SOFT_pause_device "
-    "ALC_SOFT_reopen_device "
-    "ALC_SOFT_system_events";
-/* NOLINTEND(*-avoid-c-arrays) */
+[[nodiscard]] constexpr auto GetNoDeviceExtList() noexcept -> std::string_view
+{
+    return  "ALC_ENUMERATE_ALL_EXT "
+        "ALC_ENUMERATION_EXT "
+        "ALC_EXT_CAPTURE "
+        "ALC_EXTX_direct_context "
+        "ALC_EXT_EFX "
+        "ALC_EXT_thread_local_context "
+        "ALC_SOFT_loopback "
+        "ALC_SOFT_loopback_bformat "
+        "ALC_SOFT_reopen_device "
+        "ALC_SOFT_system_events"sv;
+}
+[[nodiscard]] constexpr auto GetExtensionList() noexcept -> std::string_view
+{
+    return "ALC_ENUMERATE_ALL_EXT "
+        "ALC_ENUMERATION_EXT "
+        "ALC_EXT_CAPTURE "
+        "ALC_EXT_debug "
+        "ALC_EXT_DEDICATED "
+        "ALC_EXTX_direct_context "
+        "ALC_EXT_disconnect "
+        "ALC_EXT_EFX "
+        "ALC_EXT_thread_local_context "
+        "ALC_SOFT_device_clock "
+        "ALC_SOFT_HRTF "
+        "ALC_SOFT_loopback "
+        "ALC_SOFT_loopback_bformat "
+        "ALC_SOFT_output_limiter "
+        "ALC_SOFT_output_mode "
+        "ALC_SOFT_pause_device "
+        "ALC_SOFT_reopen_device "
+        "ALC_SOFT_system_events"sv;
+}
+
 constexpr int alcMajorVersion{1};
 constexpr int alcMinorVersion{1};
 
@@ -405,7 +406,7 @@ void alc_initconfig()
 
     if(auto suspendmode = al::getenv("__ALSOFT_SUSPEND_CONTEXT"))
     {
-        if(al::strcasecmp(suspendmode->c_str(), "ignore") == 0)
+        if(al::case_compare(*suspendmode, "ignore"sv) == 0)
         {
             SuspendDefers = false;
             TRACE("Selected context suspend behavior, \"ignore\"\n");
@@ -427,39 +428,41 @@ void alc_initconfig()
 #ifdef HAVE_NEON
     capfilter |= CPU_CAP_NEON;
 #endif
-    if(auto cpuopt = ConfigValueStr(nullptr, nullptr, "disable-cpu-exts"))
+    if(auto cpuopt = ConfigValueStr({}, {}, "disable-cpu-exts"sv))
     {
-        const char *str{cpuopt->c_str()};
-        if(al::strcasecmp(str, "all") == 0)
+        std::string_view cpulist{*cpuopt};
+        if(al::case_compare(cpulist, "all"sv) == 0)
             capfilter = 0;
-        else
+        else while(!cpulist.empty())
         {
-            const char *next = str;
-            do {
-                str = next;
-                while(isspace(str[0]))
-                    str++;
-                next = strchr(str, ',');
+            auto nextpos = std::min(cpulist.find(','), cpulist.size());
+            auto entry = cpulist.substr(0, nextpos);
 
-                if(!str[0] || str[0] == ',')
-                    continue;
+            while(nextpos < cpulist.size() && cpulist[nextpos] == ',')
+                ++nextpos;
+            cpulist.remove_prefix(nextpos);
 
-                size_t len{next ? static_cast<size_t>(next-str) : strlen(str)};
-                while(len > 0 && isspace(str[len-1]))
-                    len--;
-                if(len == 3 && al::strncasecmp(str, "sse", len) == 0)
-                    capfilter &= ~CPU_CAP_SSE;
-                else if(len == 4 && al::strncasecmp(str, "sse2", len) == 0)
-                    capfilter &= ~CPU_CAP_SSE2;
-                else if(len == 4 && al::strncasecmp(str, "sse3", len) == 0)
-                    capfilter &= ~CPU_CAP_SSE3;
-                else if(len == 6 && al::strncasecmp(str, "sse4.1", len) == 0)
-                    capfilter &= ~CPU_CAP_SSE4_1;
-                else if(len == 4 && al::strncasecmp(str, "neon", len) == 0)
-                    capfilter &= ~CPU_CAP_NEON;
-                else
-                    WARN("Invalid CPU extension \"%s\"\n", str);
-            } while(next++);
+            while(!entry.empty() && std::isspace(entry.front()))
+                entry.remove_prefix(1);
+            while(!entry.empty() && std::isspace(entry.back()))
+                entry.remove_suffix(1);
+            if(entry.empty())
+                continue;
+
+            if(al::case_compare(entry, "sse"sv) == 0)
+                capfilter &= ~CPU_CAP_SSE;
+            else if(al::case_compare(entry, "sse2"sv) == 0)
+                capfilter &= ~CPU_CAP_SSE2;
+            else if(al::case_compare(entry, "sse3"sv) == 0)
+                capfilter &= ~CPU_CAP_SSE3;
+            else if(al::case_compare(entry, "sse4.1"sv) == 0)
+                capfilter &= ~CPU_CAP_SSE4_1;
+            else if(al::case_compare(entry, "neon"sv) == 0)
+                capfilter &= ~CPU_CAP_NEON;
+            else
+                WARN("Invalid CPU extension \"%.*s\"\n", std::abs(static_cast<int>(entry.size())),
+                    entry.data());
+
         }
     }
     if(auto cpuopt = GetCPUInfo())
@@ -480,58 +483,56 @@ void alc_initconfig()
         CPUCapFlags = caps & capfilter;
     }
 
-    if(auto priopt = ConfigValueInt(nullptr, nullptr, "rt-prio"))
+    if(auto priopt = ConfigValueInt({}, {}, "rt-prio"sv))
         RTPrioLevel = *priopt;
-    if(auto limopt = ConfigValueBool(nullptr, nullptr, "rt-time-limit"))
+    if(auto limopt = ConfigValueBool({}, {}, "rt-time-limit"sv))
         AllowRTTimeLimit = *limopt;
 
     {
         CompatFlagBitset compatflags{};
-        auto checkflag = [](const char *envname, const char *optname) -> bool
+        auto checkflag = [](const char *envname, const std::string_view optname) -> bool
         {
             if(auto optval = al::getenv(envname))
             {
-                if(al::strcasecmp(optval->c_str(), "true") == 0
-                    || strtol(optval->c_str(), nullptr, 0) == 1)
-                    return true;
-                return false;
+                return al::case_compare(*optval, "true"sv) == 0
+                    || strtol(optval->c_str(), nullptr, 0) == 1;
             }
-            return GetConfigValueBool(nullptr, "game_compat", optname, false);
+            return GetConfigValueBool({}, "game_compat", optname, false);
         };
-        sBufferSubDataCompat = checkflag("__ALSOFT_ENABLE_SUB_DATA_EXT", "enable-sub-data-ext");
-        compatflags.set(CompatFlags::ReverseX, checkflag("__ALSOFT_REVERSE_X", "reverse-x"));
-        compatflags.set(CompatFlags::ReverseY, checkflag("__ALSOFT_REVERSE_Y", "reverse-y"));
-        compatflags.set(CompatFlags::ReverseZ, checkflag("__ALSOFT_REVERSE_Z", "reverse-z"));
+        sBufferSubDataCompat = checkflag("__ALSOFT_ENABLE_SUB_DATA_EXT", "enable-sub-data-ext"sv);
+        compatflags.set(CompatFlags::ReverseX, checkflag("__ALSOFT_REVERSE_X", "reverse-x"sv));
+        compatflags.set(CompatFlags::ReverseY, checkflag("__ALSOFT_REVERSE_Y", "reverse-y"sv));
+        compatflags.set(CompatFlags::ReverseZ, checkflag("__ALSOFT_REVERSE_Z", "reverse-z"sv));
 
-        aluInit(compatflags, ConfigValueFloat(nullptr, "game_compat", "nfc-scale").value_or(1.0f));
+        aluInit(compatflags, ConfigValueFloat({}, "game_compat"sv, "nfc-scale"sv).value_or(1.0f));
     }
-    Voice::InitMixer(ConfigValueStr(nullptr, nullptr, "resampler"));
+    Voice::InitMixer(ConfigValueStr({}, {}, "resampler"sv));
 
-    if(auto uhjfiltopt = ConfigValueStr(nullptr, "uhj", "decode-filter"))
+    if(auto uhjfiltopt = ConfigValueStr({}, "uhj"sv, "decode-filter"sv))
     {
-        if(al::strcasecmp(uhjfiltopt->c_str(), "fir256") == 0)
+        if(al::case_compare(*uhjfiltopt, "fir256"sv) == 0)
             UhjDecodeQuality = UhjQualityType::FIR256;
-        else if(al::strcasecmp(uhjfiltopt->c_str(), "fir512") == 0)
+        else if(al::case_compare(*uhjfiltopt, "fir512"sv) == 0)
             UhjDecodeQuality = UhjQualityType::FIR512;
-        else if(al::strcasecmp(uhjfiltopt->c_str(), "iir") == 0)
+        else if(al::case_compare(*uhjfiltopt, "iir"sv) == 0)
             UhjDecodeQuality = UhjQualityType::IIR;
         else
             WARN("Unsupported uhj/decode-filter: %s\n", uhjfiltopt->c_str());
     }
-    if(auto uhjfiltopt = ConfigValueStr(nullptr, "uhj", "encode-filter"))
+    if(auto uhjfiltopt = ConfigValueStr({}, "uhj"sv, "encode-filter"sv))
     {
-        if(al::strcasecmp(uhjfiltopt->c_str(), "fir256") == 0)
+        if(al::case_compare(*uhjfiltopt, "fir256"sv) == 0)
             UhjEncodeQuality = UhjQualityType::FIR256;
-        else if(al::strcasecmp(uhjfiltopt->c_str(), "fir512") == 0)
+        else if(al::case_compare(*uhjfiltopt, "fir512"sv) == 0)
             UhjEncodeQuality = UhjQualityType::FIR512;
-        else if(al::strcasecmp(uhjfiltopt->c_str(), "iir") == 0)
+        else if(al::case_compare(*uhjfiltopt, "iir"sv) == 0)
             UhjEncodeQuality = UhjQualityType::IIR;
         else
             WARN("Unsupported uhj/encode-filter: %s\n", uhjfiltopt->c_str());
     }
 
-    auto traperr = al::getenv("ALSOFT_TRAP_ERROR");
-    if(traperr && (al::strcasecmp(traperr->c_str(), "true") == 0
+    if(auto traperr = al::getenv("ALSOFT_TRAP_ERROR"); traperr
+        && (al::case_compare(*traperr, "true"sv) == 0
             || std::strtol(traperr->c_str(), nullptr, 0) == 1))
     {
         TrapALError  = true;
@@ -541,20 +542,20 @@ void alc_initconfig()
     {
         traperr = al::getenv("ALSOFT_TRAP_AL_ERROR");
         if(traperr)
-            TrapALError = al::strcasecmp(traperr->c_str(), "true") == 0
+            TrapALError = al::case_compare(*traperr, "true"sv) == 0
                 || strtol(traperr->c_str(), nullptr, 0) == 1;
         else
-            TrapALError = !!GetConfigValueBool(nullptr, nullptr, "trap-al-error", false);
+            TrapALError = GetConfigValueBool({}, {}, "trap-al-error"sv, false);
 
         traperr = al::getenv("ALSOFT_TRAP_ALC_ERROR");
         if(traperr)
-            TrapALCError = al::strcasecmp(traperr->c_str(), "true") == 0
+            TrapALCError = al::case_compare(*traperr, "true"sv) == 0
                 || strtol(traperr->c_str(), nullptr, 0) == 1;
         else
-            TrapALCError = !!GetConfigValueBool(nullptr, nullptr, "trap-alc-error", false);
+            TrapALCError = GetConfigValueBool({}, {}, "trap-alc-error"sv, false);
     }
 
-    if(auto boostopt = ConfigValueFloat(nullptr, "reverb", "boost"))
+    if(auto boostopt = ConfigValueFloat({}, "reverb"sv, "boost"sv))
     {
         const float valf{std::isfinite(*boostopt) ? clampf(*boostopt, -24.0f, 24.0f) : 0.0f};
         ReverbBoost *= std::pow(10.0f, valf / 20.0f);
@@ -562,43 +563,47 @@ void alc_initconfig()
 
     auto BackendListEnd = std::end(BackendList);
     auto devopt = al::getenv("ALSOFT_DRIVERS");
-    if(devopt || (devopt=ConfigValueStr(nullptr, nullptr, "drivers")))
+    if(!devopt) devopt = ConfigValueStr({}, {}, "drivers"sv);
+    if(devopt)
     {
         auto backendlist_cur = std::begin(BackendList);
 
         bool endlist{true};
-        const char *next{devopt->c_str()};
-        do {
-            const char *devs{next};
-            while(isspace(devs[0]))
-                devs++;
-            next = strchr(devs, ',');
+        std::string_view drvlist{*devopt};
+        while(!drvlist.empty())
+        {
+            auto nextpos = std::min(drvlist.find(','), drvlist.size());
+            auto entry = drvlist.substr(0, nextpos);
 
-            const bool delitem{devs[0] == '-'};
-            if(devs[0] == '-') devs++;
-
-            if(!devs[0] || devs[0] == ',')
+            endlist = true;
+            if(nextpos < drvlist.size())
             {
                 endlist = false;
-                continue;
+                while(nextpos < drvlist.size() && drvlist[nextpos] == ',')
+                    ++nextpos;
             }
-            endlist = true;
+            drvlist.remove_prefix(nextpos);
 
-            size_t len{next ? (static_cast<size_t>(next-devs)) : strlen(devs)};
-            while(len > 0 && isspace(devs[len-1])) --len;
+            while(!entry.empty() && std::isspace(entry.front()))
+                entry.remove_prefix(1);
+            const bool delitem{!entry.empty() && entry.front() == '-'};
+            if(delitem) entry.remove_prefix(1);
+
+            while(!entry.empty() && std::isspace(entry.back()))
+                entry.remove_suffix(1);
+            if(entry.empty())
+                continue;
+
 #ifdef HAVE_WASAPI
             /* HACK: For backwards compatibility, convert backend references of
              * mmdevapi to wasapi. This should eventually be removed.
              */
-            if(len == 8 && strncmp(devs, "mmdevapi", len) == 0)
-            {
-                devs = "wasapi";
-                len = 6;
-            }
+            if(entry == "mmdevapi"sv)
+                entry = "wasapi"sv;
 #endif
 
-            auto find_backend = [devs,len](const BackendInfo &backend) -> bool
-            { return len == strlen(backend.name) && strncmp(backend.name, devs, len) == 0; };
+            auto find_backend = [entry](const BackendInfo &backend) -> bool
+            { return entry == backend.name; };
             auto this_backend = std::find_if(std::begin(BackendList), BackendListEnd,
                 find_backend);
 
@@ -609,7 +614,7 @@ void alc_initconfig()
                 BackendListEnd = std::move(this_backend+1, BackendListEnd, this_backend);
             else
                 backendlist_cur = std::rotate(backendlist_cur, this_backend, this_backend+1);
-        } while(next++);
+        }
 
         if(endlist)
             BackendListEnd = backendlist_cur;
@@ -648,36 +653,32 @@ void alc_initconfig()
     if(!CaptureFactory)
         WARN("No capture backend available!\n");
 
-    if(auto exclopt = ConfigValueStr(nullptr, nullptr, "excludefx"))
+    if(auto exclopt = ConfigValueStr({}, {}, "excludefx"sv))
     {
-        const char *next{exclopt->c_str()};
-        do {
-            const char *str{next};
-            next = strchr(str, ',');
+        std::string_view exclude{*exclopt};
+        while(!exclude.empty())
+        {
+            const auto nextpos = exclude.find(',');
+            const auto entry = exclude.substr(0, nextpos);
+            exclude.remove_prefix((nextpos < exclude.size()) ? nextpos+1 : exclude.size());
 
-            if(!str[0] || next == str)
-                continue;
-
-            size_t len{next ? static_cast<size_t>(next-str) : strlen(str)};
-            for(const EffectList &effectitem : gEffectList)
-            {
-                if(len == strlen(effectitem.name) &&
-                   strncmp(effectitem.name, str, len) == 0)
-                    DisabledEffects.set(effectitem.type);
-            }
-        } while(next++);
+            std::for_each(gEffectList.cbegin(), gEffectList.cend(),
+                [entry](const EffectList &effectitem) noexcept
+                {
+                    if(entry == std::data(effectitem.name))
+                        DisabledEffects.set(effectitem.type);
+                });
+        }
     }
 
     InitEffect(&ALCcontext::sDefaultEffect);
     auto defrevopt = al::getenv("ALSOFT_DEFAULT_REVERB");
-    if(defrevopt || (defrevopt=ConfigValueStr(nullptr, nullptr, "default-reverb")))
-        LoadReverbPreset(defrevopt->c_str(), &ALCcontext::sDefaultEffect);
+    if(!defrevopt) defrevopt = ConfigValueStr({}, {}, "default-reverb"sv);
+    if(defrevopt) LoadReverbPreset(*defrevopt, &ALCcontext::sDefaultEffect);
 
 #ifdef ALSOFT_EAX
     {
-        const char *eax_block_name{"eax"};
-
-        if(const auto eax_enable_opt = ConfigValueBool(nullptr, eax_block_name, "enable"))
+        if(const auto eax_enable_opt = ConfigValueBool({}, "eax", "enable"))
         {
             eax_g_is_enabled = *eax_enable_opt;
             if(!eax_g_is_enabled)
@@ -710,7 +711,7 @@ void ProbeAllDevicesList()
 {
     InitConfig();
 
-    std::lock_guard<std::recursive_mutex> _{ListLock};
+    std::lock_guard<std::recursive_mutex> listlock{ListLock};
     if(!PlaybackFactory)
         decltype(alcAllDevicesList){}.swap(alcAllDevicesList);
     else
@@ -724,7 +725,7 @@ void ProbeCaptureDeviceList()
 {
     InitConfig();
 
-    std::lock_guard<std::recursive_mutex> _{ListLock};
+    std::lock_guard<std::recursive_mutex> listlock{ListLock};
     if(!CaptureFactory)
         decltype(alcCaptureDeviceList){}.swap(alcCaptureDeviceList);
     else
@@ -1021,72 +1022,72 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
     {
         /* Get default settings from the user configuration */
 
-        if(auto freqopt = device->configValue<uint>(nullptr, "frequency"))
+        if(auto freqopt = device->configValue<uint>({}, "frequency"))
         {
             optsrate = clampu(*freqopt, MinOutputRate, MaxOutputRate);
 
             const double scale{static_cast<double>(*optsrate) / double{DefaultOutputRate}};
-            period_size = static_cast<uint>(period_size*scale + 0.5);
+            period_size = static_cast<uint>(std::lround(period_size * scale));
         }
 
-        if(auto persizeopt = device->configValue<uint>(nullptr, "period_size"))
+        if(auto persizeopt = device->configValue<uint>({}, "period_size"))
             period_size = clampu(*persizeopt, 64, 8192);
-        if(auto numperopt = device->configValue<uint>(nullptr, "periods"))
+        if(auto numperopt = device->configValue<uint>({}, "periods"))
             buffer_size = clampu(*numperopt, 2, 16) * period_size;
         else
             buffer_size = period_size * uint{DefaultNumUpdates};
 
-        if(auto typeopt = device->configValue<std::string>(nullptr, "sample-type"))
+        if(auto typeopt = device->configValue<std::string>({}, "sample-type"))
         {
             struct TypeMap {
-                const char name[8]; /* NOLINT(*-avoid-c-arrays) */
+                std::string_view name;
                 DevFmtType type;
             };
-            static constexpr std::array typelist{
-                TypeMap{"int8",    DevFmtByte  },
-                TypeMap{"uint8",   DevFmtUByte },
-                TypeMap{"int16",   DevFmtShort },
-                TypeMap{"uint16",  DevFmtUShort},
-                TypeMap{"int32",   DevFmtInt   },
-                TypeMap{"uint32",  DevFmtUInt  },
-                TypeMap{"float32", DevFmtFloat },
+            constexpr std::array typelist{
+                TypeMap{"int8"sv,    DevFmtByte  },
+                TypeMap{"uint8"sv,   DevFmtUByte },
+                TypeMap{"int16"sv,   DevFmtShort },
+                TypeMap{"uint16"sv,  DevFmtUShort},
+                TypeMap{"int32"sv,   DevFmtInt   },
+                TypeMap{"uint32"sv,  DevFmtUInt  },
+                TypeMap{"float32"sv, DevFmtFloat },
             };
 
             const ALCchar *fmt{typeopt->c_str()};
             auto iter = std::find_if(typelist.begin(), typelist.end(),
-                [fmt](const TypeMap &entry) -> bool
-                { return al::strcasecmp(entry.name, fmt) == 0; });
+                [svfmt=std::string_view{fmt}](const TypeMap &entry) -> bool
+                { return al::case_compare(entry.name, svfmt) == 0; });
             if(iter == typelist.end())
                 ERR("Unsupported sample-type: %s\n", fmt);
             else
                 opttype = iter->type;
         }
-        if(auto chanopt = device->configValue<std::string>(nullptr, "channels"))
+        if(auto chanopt = device->configValue<std::string>({}, "channels"))
         {
             struct ChannelMap {
-                const char name[16]; /* NOLINT(*-avoid-c-arrays) */
+                std::string_view name;
                 DevFmtChannels chans;
                 uint8_t order;
             };
-            static constexpr std::array chanlist{
-                ChannelMap{"mono",       DevFmtMono,   0},
-                ChannelMap{"stereo",     DevFmtStereo, 0},
-                ChannelMap{"quad",       DevFmtQuad,   0},
-                ChannelMap{"surround51", DevFmtX51,    0},
-                ChannelMap{"surround61", DevFmtX61,    0},
-                ChannelMap{"surround71", DevFmtX71,    0},
-                ChannelMap{"surround714", DevFmtX714,  0},
-                ChannelMap{"surround3d71", DevFmtX3D71, 0},
-                ChannelMap{"surround51rear", DevFmtX51, 0},
-                ChannelMap{"ambi1", DevFmtAmbi3D, 1},
-                ChannelMap{"ambi2", DevFmtAmbi3D, 2},
-                ChannelMap{"ambi3", DevFmtAmbi3D, 3},
+            constexpr std::array chanlist{
+                ChannelMap{"mono"sv,       DevFmtMono,   0},
+                ChannelMap{"stereo"sv,     DevFmtStereo, 0},
+                ChannelMap{"quad"sv,       DevFmtQuad,   0},
+                ChannelMap{"surround51"sv, DevFmtX51,    0},
+                ChannelMap{"surround61"sv, DevFmtX61,    0},
+                ChannelMap{"surround71"sv, DevFmtX71,    0},
+                ChannelMap{"surround714"sv, DevFmtX714,  0},
+                ChannelMap{"surround3d71"sv, DevFmtX3D71, 0},
+                ChannelMap{"surround51rear"sv, DevFmtX51, 0},
+                ChannelMap{"ambi1"sv, DevFmtAmbi3D, 1},
+                ChannelMap{"ambi2"sv, DevFmtAmbi3D, 2},
+                ChannelMap{"ambi3"sv, DevFmtAmbi3D, 3},
             };
 
             const ALCchar *fmt{chanopt->c_str()};
-            auto iter = std::find_if(chanlist.end(), chanlist.end(),
-                [fmt](const ChannelMap &entry) -> bool
-                { return al::strcasecmp(entry.name, fmt) == 0; });
+            auto iter = std::find_if(chanlist.begin(), chanlist.end(),
+                [svfmt=std::string_view{fmt}](const ChannelMap &entry) -> bool
+                { return al::case_compare(entry.name, svfmt) == 0; });
             if(iter == chanlist.end())
                 ERR("Unsupported channels: %s\n", fmt);
             else
@@ -1095,61 +1096,59 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
                 aorder = iter->order;
             }
         }
-        if(auto ambiopt = device->configValue<std::string>(nullptr, "ambi-format"))
+        if(auto ambiopt = device->configValue<std::string>({}, "ambi-format"sv))
         {
-            const ALCchar *fmt{ambiopt->c_str()};
-            if(al::strcasecmp(fmt, "fuma") == 0)
+            if(al::case_compare(*ambiopt, "fuma"sv) == 0)
             {
                 optlayout = DevAmbiLayout::FuMa;
                 optscale = DevAmbiScaling::FuMa;
             }
-            else if(al::strcasecmp(fmt, "acn+fuma") == 0)
+            else if(al::case_compare(*ambiopt, "acn+fuma"sv) == 0)
             {
                 optlayout = DevAmbiLayout::ACN;
                 optscale = DevAmbiScaling::FuMa;
             }
-            else if(al::strcasecmp(fmt, "ambix") == 0 || al::strcasecmp(fmt, "acn+sn3d") == 0)
+            else if(al::case_compare(*ambiopt, "ambix"sv) == 0
+                || al::case_compare(*ambiopt, "acn+sn3d"sv) == 0)
             {
                 optlayout = DevAmbiLayout::ACN;
                 optscale = DevAmbiScaling::SN3D;
             }
-            else if(al::strcasecmp(fmt, "acn+n3d") == 0)
+            else if(al::case_compare(*ambiopt, "acn+n3d"sv) == 0)
             {
                 optlayout = DevAmbiLayout::ACN;
                 optscale = DevAmbiScaling::N3D;
             }
             else
-                ERR("Unsupported ambi-format: %s\n", fmt);
+                ERR("Unsupported ambi-format: %s\n", ambiopt->c_str());
         }
 
-        if(auto hrtfopt = device->configValue<std::string>(nullptr, "hrtf"))
+        if(auto hrtfopt = device->configValue<std::string>({}, "hrtf"sv))
         {
             WARN("general/hrtf is deprecated, please use stereo-encoding instead\n");
 
-            const char *hrtf{hrtfopt->c_str()};
-            if(al::strcasecmp(hrtf, "true") == 0)
+            if(al::case_compare(*hrtfopt, "true"sv) == 0)
                 stereomode = StereoEncoding::Hrtf;
-            else if(al::strcasecmp(hrtf, "false") == 0)
+            else if(al::case_compare(*hrtfopt, "false"sv) == 0)
             {
                 if(!stereomode || *stereomode == StereoEncoding::Hrtf)
                     stereomode = StereoEncoding::Default;
             }
-            else if(al::strcasecmp(hrtf, "auto") != 0)
-                ERR("Unexpected hrtf value: %s\n", hrtf);
+            else if(al::case_compare(*hrtfopt, "auto"sv) != 0)
+                ERR("Unexpected hrtf value: %s\n", hrtfopt->c_str());
         }
     }
 
-    if(auto encopt = device->configValue<std::string>(nullptr, "stereo-encoding"))
+    if(auto encopt = device->configValue<std::string>({}, "stereo-encoding"sv))
     {
-        const char *mode{encopt->c_str()};
-        if(al::strcasecmp(mode, "basic") == 0 || al::strcasecmp(mode, "panpot") == 0)
+        if(al::case_compare(*encopt, "basic"sv) == 0 || al::case_compare(*encopt, "panpot"sv) == 0)
             stereomode = StereoEncoding::Basic;
-        else if(al::strcasecmp(mode, "uhj") == 0)
+        else if(al::case_compare(*encopt, "uhj") == 0)
             stereomode = StereoEncoding::Uhj;
-        else if(al::strcasecmp(mode, "hrtf") == 0)
+        else if(al::case_compare(*encopt, "hrtf") == 0)
             stereomode = StereoEncoding::Hrtf;
         else
-            ERR("Unexpected stereo-encoding: %s\n", mode);
+            ERR("Unexpected stereo-encoding: %s\n", encopt->c_str());
     }
 
     // Check for app-specified attributes
@@ -1331,8 +1330,8 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
                 freqAttr = clampi(freqAttr, MinOutputRate, MaxOutputRate);
 
                 const double scale{static_cast<double>(freqAttr) / oldrate};
-                period_size = static_cast<uint>(period_size*scale + 0.5);
-                buffer_size = static_cast<uint>(buffer_size*scale + 0.5);
+                period_size = static_cast<uint>(std::lround(period_size * scale));
+                buffer_size = static_cast<uint>(std::lround(buffer_size * scale));
                 optsrate = static_cast<uint>(freqAttr);
             }
         }
@@ -1340,16 +1339,19 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
         /* If a context is already running on the device, stop playback so the
          * device attributes can be updated.
          */
-        if(device->Flags.test(DeviceRunning))
+        if(device->mDeviceState == DeviceState::Playing)
+        {
             device->Backend->stop();
-        device->Flags.reset(DeviceRunning);
+            device->mDeviceState = DeviceState::Unprepared;
+        }
 
         UpdateClockBase(device);
     }
 
-    if(device->Flags.test(DeviceRunning))
+    if(device->mDeviceState == DeviceState::Playing)
         return ALC_NO_ERROR;
 
+    device->mDeviceState = DeviceState::Unprepared;
     device->AvgSpeakerDist = 0.0f;
     device->mNFCtrlFilter = NfcFilter{};
     device->mUhjEncoder = nullptr;
@@ -1418,11 +1420,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
                     || device->mAmbiScale == DevAmbiScaling::FuMa))
             {
                 ERR("FuMa is incompatible with %d%s order ambisonics (up to 3rd order only)\n",
-                    device->mAmbiOrder,
-                    (((device->mAmbiOrder%100)/10) == 1) ? "th" :
-                    ((device->mAmbiOrder%10) == 1) ? "st" :
-                    ((device->mAmbiOrder%10) == 2) ? "nd" :
-                    ((device->mAmbiOrder%10) == 3) ? "rd" : "th");
+                    device->mAmbiOrder, GetCounterSuffix(device->mAmbiOrder));
                 device->mAmbiOrder = 3;
             }
         }
@@ -1472,15 +1470,14 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
 
     if(device->Type != DeviceType::Loopback)
     {
-        if(auto modeopt = device->configValue<std::string>(nullptr, "stereo-mode"))
+        if(auto modeopt = device->configValue<std::string>({}, "stereo-mode"))
         {
-            const char *mode{modeopt->c_str()};
-            if(al::strcasecmp(mode, "headphones") == 0)
+            if(al::case_compare(*modeopt, "headphones"sv) == 0)
                 device->Flags.set(DirectEar);
-            else if(al::strcasecmp(mode, "speakers") == 0)
+            else if(al::case_compare(*modeopt, "speakers"sv) == 0)
                 device->Flags.reset(DirectEar);
-            else if(al::strcasecmp(mode, "auto") != 0)
-                ERR("Unexpected stereo-mode: %s\n", mode);
+            else if(al::case_compare(*modeopt, "auto"sv) != 0)
+                ERR("Unexpected stereo-mode: %s\n", modeopt->c_str());
         }
     }
 
@@ -1489,7 +1486,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
     /* Calculate the max number of sources, and split them between the mono and
      * stereo count given the requested number of stereo sources.
      */
-    if(auto srcsopt = device->configValue<uint>(nullptr, "sources"))
+    if(auto srcsopt = device->configValue<uint>({}, "sources"sv))
     {
         if(*srcsopt <= 0) numMono = 256;
         else numMono = maxu(*srcsopt, 16);
@@ -1505,7 +1502,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
     device->NumMonoSources = numMono;
     device->NumStereoSources = numStereo;
 
-    if(auto sendsopt = device->configValue<int>(nullptr, "sends"))
+    if(auto sendsopt = device->configValue<int>({}, "sends"sv))
         numSends = minu(numSends, static_cast<uint>(clampi(*sendsopt, 0, MaxSendCount)));
     device->NumAuxSends = numSends;
 
@@ -1529,13 +1526,13 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
     case DevFmtAmbi3D: break;
     }
 
-    nanoseconds::rep sample_delay{0};
+    size_t sample_delay{0};
     if(auto *encoder{device->mUhjEncoder.get()})
         sample_delay += encoder->getDelay();
 
-    if(device->getConfigValueBool(nullptr, "dither", true))
+    if(device->getConfigValueBool({}, "dither"sv, true))
     {
-        int depth{device->configValue<int>(nullptr, "dither-depth").value_or(0)};
+        int depth{device->configValue<int>({}, "dither-depth"sv).value_or(0)};
         if(depth <= 0)
         {
             switch(device->FmtType)
@@ -1568,7 +1565,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
               device->DitherDepth);
 
     if(!optlimit)
-        optlimit = device->configValue<bool>(nullptr, "output-limiter");
+        optlimit = device->configValue<bool>({}, "output-limiter");
 
     /* If the gain limiter is unset, use the limiter for integer-based output
      * (where samples must be clamped), and don't for floating-point (which can
@@ -1622,6 +1619,7 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
     }
 
     /* Convert the sample delay from samples to nanosamples to nanoseconds. */
+    sample_delay = std::min<size_t>(sample_delay, std::numeric_limits<int>::max());
     device->FixedLatency += nanoseconds{seconds{sample_delay}} / device->Frequency;
     TRACE("Fixed device latency: %" PRId64 "ns\n", int64_t{device->FixedLatency.count()});
 
@@ -1664,12 +1662,16 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
 
         if(ALeffectslot *slot{context->mDefaultSlot.get()})
         {
-            aluInitEffectPanning(slot->mSlot, context);
+            auto *slotbase = slot->mSlot;
+            aluInitEffectPanning(slotbase, context);
+
+            if(auto *props = slotbase->Update.exchange(nullptr, std::memory_order_relaxed))
+                AtomicReplaceHead(context->mFreeEffectSlotProps, props);
 
             EffectState *state{slot->Effect.State.get()};
             state->mOutTarget = device->Dry.Buffer;
             state->deviceUpdate(device, slot->Buffer);
-            slot->updateProps(context);
+            slot->mPropsDirty = true;
         }
 
         if(EffectSlotArray *curarray{context->mActiveAuxSlots.load(std::memory_order_relaxed)})
@@ -1679,18 +1681,25 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
             uint64_t usemask{~sublist.FreeMask};
             while(usemask)
             {
-                const int idx{al::countr_zero(usemask)};
-                ALeffectslot *slot{sublist.EffectSlots + idx};
+                const auto idx = static_cast<uint>(al::countr_zero(usemask));
+                auto &slot = (*sublist.EffectSlots)[idx];
                 usemask &= ~(1_u64 << idx);
 
-                aluInitEffectPanning(slot->mSlot, context);
+                auto *slotbase = slot.mSlot;
+                aluInitEffectPanning(slotbase, context);
 
-                EffectState *state{slot->Effect.State.get()};
+                if(auto *props = slotbase->Update.exchange(nullptr, std::memory_order_relaxed))
+                    AtomicReplaceHead(context->mFreeEffectSlotProps, props);
+
+                EffectState *state{slot.Effect.State.get()};
                 state->mOutTarget = device->Dry.Buffer;
-                state->deviceUpdate(device, slot->Buffer);
-                slot->updateProps(context);
+                state->deviceUpdate(device, slot.Buffer);
+                slot.mPropsDirty = true;
             }
         }
+        /* Clear all effect slot props to let them get allocated again. */
+        context->mEffectSlotPropClusters.clear();
+        context->mFreeEffectSlotProps.store(nullptr, std::memory_order_relaxed);
         slotlock.unlock();
 
         const uint num_sends{device->NumAuxSends};
@@ -1700,8 +1709,8 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
             uint64_t usemask{~sublist.FreeMask};
             while(usemask)
             {
-                const int idx{al::countr_zero(usemask)};
-                ALsource *source{sublist.Sources + idx};
+                const auto idx = static_cast<uint>(al::countr_zero(usemask));
+                auto &source = (*sublist.Sources)[idx];
                 usemask &= ~(1_u64 << idx);
 
                 auto clear_send = [](ALsource::SendData &send) -> void
@@ -1711,19 +1720,18 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
                     send.Slot = nullptr;
                     send.Gain = 1.0f;
                     send.GainHF = 1.0f;
-                    send.HFReference = LOWPASSFREQREF;
+                    send.HFReference = LowPassFreqRef;
                     send.GainLF = 1.0f;
-                    send.LFReference = HIGHPASSFREQREF;
+                    send.LFReference = HighPassFreqRef;
                 };
-                auto send_begin = source->Send.begin() + static_cast<ptrdiff_t>(num_sends);
-                std::for_each(send_begin, source->Send.end(), clear_send);
+                auto send_begin = source.Send.begin() + static_cast<ptrdiff_t>(num_sends);
+                std::for_each(send_begin, source.Send.end(), clear_send);
 
-                source->mPropsDirty = true;
+                source.mPropsDirty = true;
             }
         }
 
-        auto voicelist = context->getVoicesSpan();
-        for(Voice *voice : voicelist)
+        for(Voice *voice : context->getVoicesSpan())
         {
             /* Clear extraneous property set sends. */
             std::fill(std::begin(voice->mProps.Send)+num_sends, std::end(voice->mProps.Send),
@@ -1755,16 +1763,18 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const int *attrList)
 
         context->mPropsDirty = false;
         UpdateContextProps(context);
+        UpdateAllEffectSlotProps(context);
         UpdateAllSourceProps(context);
     }
     mixer_mode.leave();
 
+    device->mDeviceState = DeviceState::Configured;
     if(!device->Flags.test(DevicePaused))
     {
         try {
             auto backend = device->Backend.get();
             backend->start();
-            device->Flags.set(DeviceRunning);
+            device->mDeviceState = DeviceState::Playing;
         }
         catch(al::backend_exception& e) {
             ERR("%s\n", e.what());
@@ -1800,7 +1810,7 @@ bool ResetDeviceParams(ALCdevice *device, const int *attrList)
             /* Clear any pending voice changes and reallocate voices to get a
              * clean restart.
              */
-            std::lock_guard<std::mutex> __{ctx->mSourceLock};
+            std::lock_guard<std::mutex> sourcelock{ctx->mSourceLock};
             auto *vchg = ctx->mCurrentVoiceChange.load(std::memory_order_acquire);
             while(auto *next = vchg->mNext.load(std::memory_order_acquire))
                 vchg = next;
@@ -1828,7 +1838,7 @@ bool ResetDeviceParams(ALCdevice *device, const int *attrList)
 /** Checks if the device handle is valid, and returns a new reference if so. */
 DeviceRef VerifyDevice(ALCdevice *device)
 {
-    std::lock_guard<std::recursive_mutex> _{ListLock};
+    std::lock_guard<std::recursive_mutex> listlock{ListLock};
     auto iter = std::lower_bound(DeviceList.begin(), DeviceList.end(), device);
     if(iter != DeviceList.end() && *iter == device)
     {
@@ -1844,7 +1854,7 @@ DeviceRef VerifyDevice(ALCdevice *device)
  */
 ContextRef VerifyContext(ALCcontext *context)
 {
-    std::lock_guard<std::recursive_mutex> _{ListLock};
+    std::lock_guard<std::recursive_mutex> listlock{ListLock};
     auto iter = std::lower_bound(ContextList.begin(), ContextList.end(), context);
     if(iter != ContextList.end() && *iter == context)
     {
@@ -1931,7 +1941,7 @@ ALC_API void ALC_APIENTRY alcSuspendContext(ALCcontext *context) noexcept
 
     if(SuspendDefers)
     {
-        std::lock_guard<std::mutex> _{ctx->mPropLock};
+        std::lock_guard<std::mutex> proplock{ctx->mPropLock};
         ctx->deferUpdates();
     }
 }
@@ -1954,7 +1964,7 @@ ALC_API void ALC_APIENTRY alcProcessContext(ALCcontext *context) noexcept
 
     if(SuspendDefers)
     {
-        std::lock_guard<std::mutex> _{ctx->mPropLock};
+        std::lock_guard<std::mutex> proplock{ctx->mPropLock};
         ctx->processUpdates();
     }
 }
@@ -1966,32 +1976,15 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *Device, ALCenum para
 
     switch(param)
     {
-    case ALC_NO_ERROR:
-        value = alcNoError;
-        break;
-
-    case ALC_INVALID_ENUM:
-        value = alcErrInvalidEnum;
-        break;
-
-    case ALC_INVALID_VALUE:
-        value = alcErrInvalidValue;
-        break;
-
-    case ALC_INVALID_DEVICE:
-        value = alcErrInvalidDevice;
-        break;
-
-    case ALC_INVALID_CONTEXT:
-        value = alcErrInvalidContext;
-        break;
-
-    case ALC_OUT_OF_MEMORY:
-        value = alcErrOutOfMemory;
-        break;
+    case ALC_NO_ERROR: value = GetNoErrorString(); break;
+    case ALC_INVALID_ENUM: value = GetInvalidEnumString(); break;
+    case ALC_INVALID_VALUE: value = GetInvalidValueString(); break;
+    case ALC_INVALID_DEVICE: value = GetInvalidDeviceString(); break;
+    case ALC_INVALID_CONTEXT: value = GetInvalidContextString(); break;
+    case ALC_OUT_OF_MEMORY: value = GetOutOfMemoryString(); break;
 
     case ALC_DEVICE_SPECIFIER:
-        value = alcDefaultName;
+        value = GetDefaultName();
         break;
 
     case ALC_ALL_DEVICES_SPECIFIER:
@@ -2000,10 +1993,10 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *Device, ALCenum para
             if(dev->Type == DeviceType::Capture)
                 alcSetError(dev.get(), ALC_INVALID_ENUM);
             else if(dev->Type == DeviceType::Loopback)
-                value = alcDefaultName;
+                value = GetDefaultName();
             else
             {
-                std::lock_guard<std::mutex> _{dev->StateLock};
+                std::lock_guard<std::mutex> statelock{dev->StateLock};
                 value = dev->DeviceName.c_str();
             }
         }
@@ -2021,7 +2014,7 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *Device, ALCenum para
                 alcSetError(dev.get(), ALC_INVALID_ENUM);
             else
             {
-                std::lock_guard<std::mutex> _{dev->StateLock};
+                std::lock_guard<std::mutex> statelock{dev->StateLock};
                 value = dev->DeviceName.c_str();
             }
         }
@@ -2034,7 +2027,7 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *Device, ALCenum para
 
     /* Default devices are always first in the list */
     case ALC_DEFAULT_DEVICE_SPECIFIER:
-        value = alcDefaultName;
+        value = GetDefaultName();
         break;
 
     case ALC_DEFAULT_ALL_DEVICES_SPECIFIER:
@@ -2042,7 +2035,7 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *Device, ALCenum para
             ProbeAllDevicesList();
 
         /* Copy first entry as default. */
-        alcDefaultAllDevicesSpecifier = alcAllDevicesList.c_str();
+        alcDefaultAllDevicesSpecifier = alcAllDevicesList.substr(0, alcAllDevicesList.find('\0'));
         value = alcDefaultAllDevicesSpecifier.c_str();
         break;
 
@@ -2051,21 +2044,22 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *Device, ALCenum para
             ProbeCaptureDeviceList();
 
         /* Copy first entry as default. */
-        alcCaptureDefaultDeviceSpecifier = alcCaptureDeviceList.c_str();
+        alcCaptureDefaultDeviceSpecifier = alcCaptureDeviceList.substr(0,
+            alcCaptureDeviceList.find('\0'));
         value = alcCaptureDefaultDeviceSpecifier.c_str();
         break;
 
     case ALC_EXTENSIONS:
         if(VerifyDevice(Device))
-            value = alcExtensionList;
+            value = GetExtensionList().data();
         else
-            value = alcNoDeviceExtList;
+            value = GetNoDeviceExtList().data();
         break;
 
     case ALC_HRTF_SPECIFIER_SOFT:
         if(DeviceRef dev{VerifyDevice(Device)})
         {
-            std::lock_guard<std::mutex> _{dev->StateLock};
+            std::lock_guard<std::mutex> statelock{dev->StateLock};
             value = (dev->mHrtf ? dev->mHrtfName.c_str() : "");
         }
         else
@@ -2083,8 +2077,6 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *Device, ALCenum para
 
 static size_t GetIntegerv(ALCdevice *device, ALCenum param, const al::span<int> values)
 {
-    size_t i;
-
     if(values.empty())
     {
         alcSetError(device, ALC_INVALID_VALUE);
@@ -2135,7 +2127,7 @@ static size_t GetIntegerv(ALCdevice *device, ALCenum param, const al::span<int> 
         return 0;
     }
 
-    std::lock_guard<std::mutex> _{device->StateLock};
+    std::lock_guard<std::mutex> statelock{device->StateLock};
     if(device->Type == DeviceType::Capture)
     {
         static constexpr int MaxCaptureAttributes{9};
@@ -2145,11 +2137,9 @@ static size_t GetIntegerv(ALCdevice *device, ALCenum param, const al::span<int> 
             values[0] = MaxCaptureAttributes;
             return 1;
         case ALC_ALL_ATTRIBUTES:
-            i = 0;
-            if(values.size() < MaxCaptureAttributes)
-                alcSetError(device, ALC_INVALID_VALUE);
-            else
+            if(values.size() >= MaxCaptureAttributes)
             {
+                size_t i{0};
                 values[i++] = ALC_MAJOR_VERSION;
                 values[i++] = alcMajorVersion;
                 values[i++] = ALC_MINOR_VERSION;
@@ -2160,8 +2150,10 @@ static size_t GetIntegerv(ALCdevice *device, ALCenum param, const al::span<int> 
                 values[i++] = device->Connected.load(std::memory_order_relaxed);
                 values[i++] = 0;
                 assert(i == MaxCaptureAttributes);
+                return i;
             }
-            return i;
+            alcSetError(device, ALC_INVALID_VALUE);
+            return 0;
 
         case ALC_MAJOR_VERSION:
             values[0] = alcMajorVersion;
@@ -2185,7 +2177,7 @@ static size_t GetIntegerv(ALCdevice *device, ALCenum param, const al::span<int> 
     }
 
     /* render device */
-    auto NumAttrsForDevice = [](ALCdevice *aldev) noexcept
+    auto NumAttrsForDevice = [](const ALCdevice *aldev) noexcept -> uint8_t
     {
         if(aldev->Type == DeviceType::Loopback && aldev->FmtChans == DevFmtAmbi3D)
             return 37;
@@ -2198,11 +2190,9 @@ static size_t GetIntegerv(ALCdevice *device, ALCenum param, const al::span<int> 
         return 1;
 
     case ALC_ALL_ATTRIBUTES:
-        i = 0;
-        if(values.size() < static_cast<size_t>(NumAttrsForDevice(device)))
-            alcSetError(device, ALC_INVALID_VALUE);
-        else
+        if(values.size() >= NumAttrsForDevice(device))
         {
+            size_t i{0};
             values[i++] = ALC_MAJOR_VERSION;
             values[i++] = alcMajorVersion;
             values[i++] = ALC_MINOR_VERSION;
@@ -2268,8 +2258,11 @@ static size_t GetIntegerv(ALCdevice *device, ALCenum param, const al::span<int> 
             values[i++] = static_cast<ALCenum>(device->getOutputMode1());
 
             values[i++] = 0;
+            assert(i == NumAttrsForDevice(device));
+            return i;
         }
-        return i;
+        alcSetError(device, ALC_INVALID_VALUE);
+        return 0;
 
     case ALC_MAJOR_VERSION:
         values[0] = alcMajorVersion;
@@ -2433,7 +2426,7 @@ ALC_API void ALC_APIENTRY alcGetInteger64vSOFT(ALCdevice *device, ALCenum pname,
             return 41;
         return 35;
     };
-    std::lock_guard<std::mutex> _{dev->StateLock};
+    std::lock_guard<std::mutex> statelock{dev->StateLock};
     switch(pname)
     {
     case ALC_ATTRIBUTES_SIZE:
@@ -2504,7 +2497,7 @@ ALC_API void ALC_APIENTRY alcGetInteger64vSOFT(ALCdevice *device, ALCenum pname,
             values[i++] = clock.Latency.count();
 
             values[i++] = ALC_OUTPUT_MODE_SOFT;
-            values[i++] = static_cast<ALCenum>(device->getOutputMode1());
+            values[i++] = al::to_underlying(device->getOutputMode1());
 
             values[i++] = 0;
         }
@@ -2553,23 +2546,21 @@ ALC_API ALCboolean ALC_APIENTRY alcIsExtensionPresent(ALCdevice *device, const A
 {
     DeviceRef dev{VerifyDevice(device)};
     if(!extName)
-        alcSetError(dev.get(), ALC_INVALID_VALUE);
-    else
     {
-        size_t len = strlen(extName);
-        const char *ptr = (dev ? alcExtensionList : alcNoDeviceExtList);
-        while(ptr && *ptr)
-        {
-            if(al::strncasecmp(ptr, extName, len) == 0 && (ptr[len] == '\0' || isspace(ptr[len])))
-                return ALC_TRUE;
+        alcSetError(dev.get(), ALC_INVALID_VALUE);
+        return ALC_FALSE;
+    }
 
-            if((ptr=strchr(ptr, ' ')) != nullptr)
-            {
-                do {
-                    ++ptr;
-                } while(isspace(*ptr));
-            }
-        }
+    const std::string_view tofind{extName};
+    const auto extlist = dev ? GetExtensionList() : GetNoDeviceExtList();
+    auto matchpos = extlist.find(tofind);
+    while(matchpos != std::string_view::npos)
+    {
+        const auto endpos = matchpos + tofind.size();
+        if((matchpos == 0 || std::isspace(extlist[matchpos-1]))
+            && (endpos == extlist.size() || std::isspace(extlist[endpos])))
+            return ALC_TRUE;
+        matchpos = extlist.find(tofind, matchpos+1);
     }
     return ALC_FALSE;
 }
@@ -2691,7 +2682,7 @@ ALC_API ALCcontext* ALC_APIENTRY alcCreateContext(ALCdevice *device, const ALCin
     }
     context->init();
 
-    if(auto volopt = dev->configValue<float>(nullptr, "volume-adjust"))
+    if(auto volopt = dev->configValue<float>({}, "volume-adjust"))
     {
         const float valf{*volopt};
         if(!std::isfinite(valf))
@@ -2713,8 +2704,7 @@ ALC_API ALCcontext* ALC_APIENTRY alcCreateContext(ALCdevice *device, const ALCin
          * old array.
          */
         auto *oldarray = device->mContexts.load();
-        const size_t newcount{oldarray->size()+1};
-        std::unique_ptr<ContextArray> newarray{ContextArray::Create(newcount)};
+        auto newarray = ContextArray::Create(oldarray->size() + 1);
 
         /* Copy the current/old context handles to the new array, appending the
          * new context.
@@ -2725,19 +2715,16 @@ ALC_API ALCcontext* ALC_APIENTRY alcCreateContext(ALCdevice *device, const ALCin
         /* Store the new context array in the device. Wait for any current mix
          * to finish before deleting the old array.
          */
-        dev->mContexts.store(newarray.release());
-        if(oldarray != &DeviceBase::sEmptyContextArray)
-        {
-            std::ignore = dev->waitForMix();
-            delete oldarray;
-        }
+        auto prevarray = dev->mContexts.exchange(std::move(newarray));
+        std::ignore = dev->waitForMix();
     }
     statelock.unlock();
 
     {
-        std::lock_guard<std::recursive_mutex> _{ListLock};
+        listlock.lock();
         auto iter = std::lower_bound(ContextList.cbegin(), ContextList.cend(), context.get());
         ContextList.emplace(iter, context.get());
+        listlock.unlock();
     }
 
     if(ALeffectslot *slot{context->mDefaultSlot.get()})
@@ -2773,16 +2760,12 @@ ALC_API void ALC_APIENTRY alcDestroyContext(ALCcontext *context) noexcept
 
     ALCdevice *Device{ctx->mALDevice.get()};
 
-    std::lock_guard<std::mutex> _{Device->StateLock};
-    if(!ctx->deinit() && Device->Flags.test(DeviceRunning))
-    {
-        Device->Backend->stop();
-        Device->Flags.reset(DeviceRunning);
-    }
+    std::lock_guard<std::mutex> statelock{Device->StateLock};
+    ctx->deinit();
 }
 
 
-ALC_API ALCcontext* ALC_APIENTRY alcGetCurrentContext(void) noexcept
+ALC_API auto ALC_APIENTRY alcGetCurrentContext() noexcept -> ALCcontext*
 {
     ALCcontext *Context{ALCcontext::getThreadContext()};
     if(!Context) Context = ALCcontext::sGlobalContext.load();
@@ -2790,7 +2773,7 @@ ALC_API ALCcontext* ALC_APIENTRY alcGetCurrentContext(void) noexcept
 }
 
 /** Returns the currently active thread-local context. */
-ALC_API ALCcontext* ALC_APIENTRY alcGetThreadContext(void) noexcept
+ALC_API auto ALC_APIENTRY alcGetThreadContext() noexcept -> ALCcontext*
 { return ALCcontext::getThreadContext(); }
 
 ALC_API ALCboolean ALC_APIENTRY alcMakeContextCurrent(ALCcontext *context) noexcept
@@ -2815,7 +2798,7 @@ ALC_API ALCboolean ALC_APIENTRY alcMakeContextCurrent(ALCcontext *context) noexc
          * the current context as its refcount is decremented.
          */
     }
-    ContextRef{ALCcontext::sGlobalContext.exchange(ctx.release())};
+    ctx = ContextRef{ALCcontext::sGlobalContext.exchange(ctx.release())};
     ALCcontext::sGlobalContextLock.store(false, std::memory_order_release);
 
     /* Take ownership of the thread-local context reference (if any), clearing
@@ -2872,26 +2855,46 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName) noexcep
         return nullptr;
     }
 
-    if(deviceName)
+    /* We need to ensure the device name isn't too long. The string_view is
+     * printed using the "%.*s" formatter, which uses an int for the precision/
+     * length. It wouldn't be a significant problem if larger values simply
+     * printed fewer characters due to truncation, but negative values are
+     * ignored, treating it like a normal null-terminated string, and
+     * string_views don't need to be null-terminated.
+     *
+     * Other than the annoyance of checking, this shouldn't be a problem. Two
+     * billion bytes is enough for a device name.
+     */
+    std::string_view devname{deviceName ? deviceName : ""};
+    if(!devname.empty())
     {
-        TRACE("Opening playback device \"%s\"\n", deviceName);
-        if(!deviceName[0] || al::strcasecmp(deviceName, alcDefaultName) == 0
+        if(devname.length() >= std::numeric_limits<int>::max())
+        {
+            ERR("Device name too long (%zu >= %d)\n", devname.length(),
+                std::numeric_limits<int>::max());
+            alcSetError(nullptr, ALC_INVALID_VALUE);
+            return nullptr;
+        }
+
+        TRACE("Opening playback device \"%.*s\"\n", static_cast<int>(devname.size()),
+            devname.data());
+        if(al::case_compare(devname, GetDefaultName()) == 0
 #ifdef _WIN32
             /* Some old Windows apps hardcode these expecting OpenAL to use a
              * specific audio API, even when they're not enumerated. Creative's
              * router effectively ignores them too.
              */
-            || al::strcasecmp(deviceName, "DirectSound3D") == 0
-            || al::strcasecmp(deviceName, "DirectSound") == 0
-            || al::strcasecmp(deviceName, "MMSYSTEM") == 0
+            || al::case_compare(devname, "DirectSound3D"sv) == 0
+            || al::case_compare(devname, "DirectSound"sv) == 0
+            || al::case_compare(devname, "MMSYSTEM"sv) == 0
 #endif
             /* Some old Linux apps hardcode configuration strings that were
              * supported by the OpenAL SI. We can't really do anything useful
              * with them, so just ignore.
              */
-            || (deviceName[0] == '\'' && deviceName[1] == '(')
-            || al::strcasecmp(deviceName, "openal-soft") == 0)
-            deviceName = nullptr;
+            || al::starts_with(devname, "'("sv)
+            || al::case_compare(devname, "openal-soft"sv) == 0)
+            devname = {};
     }
     else
         TRACE("Opening default playback device\n");
@@ -2903,7 +2906,13 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName) noexcep
         uint{DefaultSendCount}
     };
 
-    DeviceRef device{new ALCdevice{DeviceType::Playback}};
+    DeviceRef device{new(std::nothrow) ALCdevice{DeviceType::Playback}};
+    if(!device)
+    {
+        WARN("Failed to create playback device handle\n");
+        alcSetError(nullptr, ALC_OUT_OF_MEMORY);
+        return nullptr;
+    }
 
     /* Set output format */
     device->FmtChans = DevFmtChannelsDefault;
@@ -2919,25 +2928,8 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName) noexcep
     device->NumAuxSends = DefaultSends;
 
     try {
-        /* We need to ensure the device name isn't too long. The string_view is
-         * printed using the "%.*s" formatter, which uses an int for the
-         * precision/length. It wouldn't be a significant problem if larger
-         * values simply printed fewer characters due to truncation, but
-         * negative values are ignored, treating it like a normal null-
-         * terminated string, and string_views don't need to be null-
-         * terminated.
-         *
-         * Other than the annoyance of checking, this shouldn't be a problem.
-         * Two billion bytes is enough for a device name.
-         */
-        const std::string_view devname{deviceName ? deviceName : ""};
-        if(devname.length() >= std::numeric_limits<int>::max())
-            throw al::backend_exception{al::backend_error::NoDevice,
-                "Device name too long (%zu >= %d)", devname.length(),
-                std::numeric_limits<int>::max()};
-
         auto backend = PlaybackFactory->createBackend(device.get(), BackendType::Playback);
-        std::lock_guard<std::recursive_mutex> _{ListLock};
+        std::lock_guard<std::recursive_mutex> listlock{ListLock};
         backend->open(devname);
         device->Backend = std::move(backend);
     }
@@ -2949,7 +2941,7 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName) noexcep
     }
 
     {
-        std::lock_guard<std::recursive_mutex> _{ListLock};
+        std::lock_guard<std::recursive_mutex> listlock{ListLock};
         auto iter = std::lower_bound(DeviceList.cbegin(), DeviceList.cend(), device.get());
         DeviceList.emplace(iter, device.get());
     }
@@ -2999,9 +2991,11 @@ ALC_API ALCboolean ALC_APIENTRY alcCloseDevice(ALCdevice *device) noexcept
     }
     orphanctxs.clear();
 
-    if(dev->Flags.test(DeviceRunning))
+    if(dev->mDeviceState == DeviceState::Playing)
+    {
         dev->Backend->stop();
-    dev->Flags.reset(DeviceRunning);
+        dev->mDeviceState = DeviceState::Configured;
+    }
 
     return ALC_TRUE;
 }
@@ -3026,17 +3020,33 @@ ALC_API ALCdevice* ALC_APIENTRY alcCaptureOpenDevice(const ALCchar *deviceName, 
         return nullptr;
     }
 
-    if(deviceName)
+    std::string_view devname{deviceName ? deviceName : ""};
+    if(!devname.empty())
     {
-        TRACE("Opening capture device \"%s\"\n", deviceName);
-        if(!deviceName[0] || al::strcasecmp(deviceName, alcDefaultName) == 0
-            || al::strcasecmp(deviceName, "openal-soft") == 0)
-            deviceName = nullptr;
+        if(devname.length() >= std::numeric_limits<int>::max())
+        {
+            ERR("Device name too long (%zu >= %d)\n", devname.length(),
+                std::numeric_limits<int>::max());
+            alcSetError(nullptr, ALC_INVALID_VALUE);
+            return nullptr;
+        }
+
+        TRACE("Opening capture device \"%.*s\"\n", static_cast<int>(devname.size()),
+            devname.data());
+        if(al::case_compare(devname, GetDefaultName()) == 0
+            || al::case_compare(devname, "openal-soft"sv) == 0)
+            devname = {};
     }
     else
         TRACE("Opening default capture device\n");
 
-    DeviceRef device{new ALCdevice{DeviceType::Capture}};
+    DeviceRef device{new(std::nothrow) ALCdevice{DeviceType::Capture}};
+    if(!device)
+    {
+        WARN("Failed to create capture device handle\n");
+        alcSetError(nullptr, ALC_OUT_OF_MEMORY);
+        return nullptr;
+    }
 
     auto decompfmt = DecomposeDevFormat(format);
     if(!decompfmt)
@@ -3060,14 +3070,8 @@ ALC_API ALCdevice* ALC_APIENTRY alcCaptureOpenDevice(const ALCchar *deviceName, 
         device->BufferSize);
 
     try {
-        const std::string_view devname{deviceName ? deviceName : ""};
-        if(devname.length() >= std::numeric_limits<int>::max())
-            throw al::backend_exception{al::backend_error::NoDevice,
-                "Device name too long (%zu >= %d)", devname.length(),
-                std::numeric_limits<int>::max()};
-
         auto backend = CaptureFactory->createBackend(device.get(), BackendType::Capture);
-        std::lock_guard<std::recursive_mutex> _{ListLock};
+        std::lock_guard<std::recursive_mutex> listlock{ListLock};
         backend->open(devname);
         device->Backend = std::move(backend);
     }
@@ -3079,10 +3083,11 @@ ALC_API ALCdevice* ALC_APIENTRY alcCaptureOpenDevice(const ALCchar *deviceName, 
     }
 
     {
-        std::lock_guard<std::recursive_mutex> _{ListLock};
+        std::lock_guard<std::recursive_mutex> listlock{ListLock};
         auto iter = std::lower_bound(DeviceList.cbegin(), DeviceList.cend(), device.get());
         DeviceList.emplace(iter, device.get());
     }
+    device->mDeviceState = DeviceState::Configured;
 
     TRACE("Created capture device %p, \"%s\"\n", voidp{device.get()}, device->DeviceName.c_str());
     return device.release();
@@ -3107,10 +3112,12 @@ ALC_API ALCboolean ALC_APIENTRY alcCaptureCloseDevice(ALCdevice *device) noexcep
     DeviceList.erase(iter);
     listlock.unlock();
 
-    std::lock_guard<std::mutex> _{dev->StateLock};
-    if(dev->Flags.test(DeviceRunning))
+    std::lock_guard<std::mutex> statelock{dev->StateLock};
+    if(dev->mDeviceState == DeviceState::Playing)
+    {
         dev->Backend->stop();
-    dev->Flags.reset(DeviceRunning);
+        dev->mDeviceState = DeviceState::Configured;
+    }
 
     return ALC_TRUE;
 }
@@ -3124,15 +3131,16 @@ ALC_API void ALC_APIENTRY alcCaptureStart(ALCdevice *device) noexcept
         return;
     }
 
-    std::lock_guard<std::mutex> _{dev->StateLock};
-    if(!dev->Connected.load(std::memory_order_acquire))
+    std::lock_guard<std::mutex> statelock{dev->StateLock};
+    if(!dev->Connected.load(std::memory_order_acquire)
+        || dev->mDeviceState < DeviceState::Configured)
         alcSetError(dev.get(), ALC_INVALID_DEVICE);
-    else if(!dev->Flags.test(DeviceRunning))
+    else if(dev->mDeviceState != DeviceState::Playing)
     {
         try {
             auto backend = dev->Backend.get();
             backend->start();
-            dev->Flags.set(DeviceRunning);
+            dev->mDeviceState = DeviceState::Playing;
         }
         catch(al::backend_exception& e) {
             ERR("%s\n", e.what());
@@ -3149,10 +3157,12 @@ ALC_API void ALC_APIENTRY alcCaptureStop(ALCdevice *device) noexcept
         alcSetError(dev.get(), ALC_INVALID_DEVICE);
     else
     {
-        std::lock_guard<std::mutex> _{dev->StateLock};
-        if(dev->Flags.test(DeviceRunning))
+        std::lock_guard<std::mutex> statelock{dev->StateLock};
+        if(dev->mDeviceState == DeviceState::Playing)
+        {
             dev->Backend->stop();
-        dev->Flags.reset(DeviceRunning);
+            dev->mDeviceState = DeviceState::Configured;
+        }
     }
 }
 
@@ -3173,7 +3183,7 @@ ALC_API void ALC_APIENTRY alcCaptureSamples(ALCdevice *device, ALCvoid *buffer, 
     if(samples < 1)
         return;
 
-    std::lock_guard<std::mutex> _{dev->StateLock};
+    std::lock_guard<std::mutex> statelock{dev->StateLock};
     BackendBase *backend{dev->Backend.get()};
 
     const auto usamples = static_cast<uint>(samples);
@@ -3197,7 +3207,7 @@ ALC_API ALCdevice* ALC_APIENTRY alcLoopbackOpenDeviceSOFT(const ALCchar *deviceN
     InitConfig();
 
     /* Make sure the device name, if specified, is us. */
-    if(deviceName && strcmp(deviceName, alcDefaultName) != 0)
+    if(deviceName && strcmp(deviceName, GetDefaultName()) != 0)
     {
         alcSetError(nullptr, ALC_INVALID_VALUE);
         return nullptr;
@@ -3210,7 +3220,13 @@ ALC_API ALCdevice* ALC_APIENTRY alcLoopbackOpenDeviceSOFT(const ALCchar *deviceN
         uint{DefaultSendCount}
     };
 
-    DeviceRef device{new ALCdevice{DeviceType::Loopback}};
+    DeviceRef device{new(std::nothrow) ALCdevice{DeviceType::Loopback}};
+    if(!device)
+    {
+        WARN("Failed to create loopback device handle\n");
+        alcSetError(nullptr, ALC_OUT_OF_MEMORY);
+        return nullptr;
+    }
 
     device->SourcesMax = 256;
     device->AuxiliaryEffectSlotMax = 64;
@@ -3241,7 +3257,7 @@ ALC_API ALCdevice* ALC_APIENTRY alcLoopbackOpenDeviceSOFT(const ALCchar *deviceN
     }
 
     {
-        std::lock_guard<std::recursive_mutex> _{ListLock};
+        std::lock_guard<std::recursive_mutex> listlock{ListLock};
         auto iter = std::lower_bound(DeviceList.cbegin(), DeviceList.cend(), device.get());
         DeviceList.emplace(iter, device.get());
     }
@@ -3303,10 +3319,12 @@ ALC_API void ALC_APIENTRY alcDevicePauseSOFT(ALCdevice *device) noexcept
         alcSetError(dev.get(), ALC_INVALID_DEVICE);
     else
     {
-        std::lock_guard<std::mutex> _{dev->StateLock};
-        if(dev->Flags.test(DeviceRunning))
+        std::lock_guard<std::mutex> statelock{dev->StateLock};
+        if(dev->mDeviceState == DeviceState::Playing)
+        {
             dev->Backend->stop();
-        dev->Flags.reset(DeviceRunning);
+            dev->mDeviceState = DeviceState::Configured;
+        }
         dev->Flags.set(DevicePaused);
     }
 }
@@ -3321,9 +3339,21 @@ ALC_API void ALC_APIENTRY alcDeviceResumeSOFT(ALCdevice *device) noexcept
         return;
     }
 
-    std::lock_guard<std::mutex> _{dev->StateLock};
+    std::lock_guard<std::mutex> statelock{dev->StateLock};
     if(!dev->Flags.test(DevicePaused))
         return;
+    if(dev->mDeviceState < DeviceState::Configured)
+    {
+        WARN("Cannot resume unconfigured device\n");
+        alcSetError(dev.get(), ALC_INVALID_DEVICE);
+        return;
+    }
+    if(!dev->Connected.load())
+    {
+        WARN("Cannot resume a disconnected device\n");
+        alcSetError(dev.get(), ALC_INVALID_DEVICE);
+        return;
+    }
     dev->Flags.reset(DevicePaused);
     if(dev->mContexts.load()->empty())
         return;
@@ -3331,7 +3361,7 @@ ALC_API void ALC_APIENTRY alcDeviceResumeSOFT(ALCdevice *device) noexcept
     try {
         auto backend = dev->Backend.get();
         backend->start();
-        dev->Flags.set(DeviceRunning);
+        dev->mDeviceState = DeviceState::Playing;
     }
     catch(al::backend_exception& e) {
         ERR("%s\n", e.what());
@@ -3340,8 +3370,8 @@ ALC_API void ALC_APIENTRY alcDeviceResumeSOFT(ALCdevice *device) noexcept
         return;
     }
     TRACE("Post-resume: %s, %s, %uhz, %u / %u buffer\n",
-        DevFmtChannelsString(device->FmtChans), DevFmtTypeString(device->FmtType),
-        device->Frequency, device->UpdateSize, device->BufferSize);
+        DevFmtChannelsString(dev->FmtChans), DevFmtTypeString(dev->FmtType),
+        dev->Frequency, dev->UpdateSize, dev->BufferSize);
 }
 
 
@@ -3382,15 +3412,17 @@ ALC_API ALCboolean ALC_APIENTRY alcResetDeviceSOFT(ALCdevice *device, const ALCi
         alcSetError(dev.get(), ALC_INVALID_DEVICE);
         return ALC_FALSE;
     }
-    std::lock_guard<std::mutex> _{dev->StateLock};
+    std::lock_guard<std::mutex> statelock{dev->StateLock};
     listlock.unlock();
 
     /* Force the backend to stop mixing first since we're resetting. Also reset
      * the connected state so lost devices can attempt recover.
      */
-    if(dev->Flags.test(DeviceRunning))
+    if(dev->mDeviceState == DeviceState::Playing)
+    {
         dev->Backend->stop();
-    dev->Flags.reset(DeviceRunning);
+        dev->mDeviceState = DeviceState::Configured;
+    }
 
     return ResetDeviceParams(dev.get(), attribs) ? ALC_TRUE : ALC_FALSE;
 }
@@ -3404,12 +3436,6 @@ ALC_API ALCboolean ALC_APIENTRY alcResetDeviceSOFT(ALCdevice *device, const ALCi
 FORCE_ALIGN ALCboolean ALC_APIENTRY alcReopenDeviceSOFT(ALCdevice *device,
     const ALCchar *deviceName, const ALCint *attribs) noexcept
 {
-    if(deviceName)
-    {
-        if(!deviceName[0] || al::strcasecmp(deviceName, alcDefaultName) == 0)
-            deviceName = nullptr;
-    }
-
     std::unique_lock<std::recursive_mutex> listlock{ListLock};
     DeviceRef dev{VerifyDevice(device)};
     if(!dev || dev->Type != DeviceType::Playback)
@@ -3418,24 +3444,32 @@ FORCE_ALIGN ALCboolean ALC_APIENTRY alcReopenDeviceSOFT(ALCdevice *device,
         alcSetError(dev.get(), ALC_INVALID_DEVICE);
         return ALC_FALSE;
     }
-    std::lock_guard<std::mutex> _{dev->StateLock};
+    std::lock_guard<std::mutex> statelock{dev->StateLock};
 
-    /* Force the backend to stop mixing first since we're reopening. */
-    if(dev->Flags.test(DeviceRunning))
+    std::string_view devname{deviceName ? deviceName : ""};
+    if(!devname.empty())
     {
-        auto backend = dev->Backend.get();
-        backend->stop();
-        dev->Flags.reset(DeviceRunning);
+        if(devname.length() >= std::numeric_limits<int>::max())
+        {
+            ERR("Device name too long (%zu >= %d)\n", devname.length(),
+                std::numeric_limits<int>::max());
+            alcSetError(dev.get(), ALC_INVALID_VALUE);
+            return ALC_FALSE;
+        }
+        if(al::case_compare(devname, GetDefaultName()) == 0)
+            devname = {};
+    }
+
+    /* Force the backend device to stop first since we're opening another one. */
+    const bool wasPlaying{dev->mDeviceState == DeviceState::Playing};
+    if(wasPlaying)
+    {
+        dev->Backend->stop();
+        dev->mDeviceState = DeviceState::Configured;
     }
 
     BackendPtr newbackend;
     try {
-        const std::string_view devname{deviceName ? deviceName : ""};
-        if(devname.length() >= std::numeric_limits<int>::max())
-            throw al::backend_exception{al::backend_error::NoDevice,
-                "Device name too long (%zu >= %d)", devname.length(),
-                std::numeric_limits<int>::max()};
-
         newbackend = PlaybackFactory->createBackend(dev.get(), BackendType::Playback);
         newbackend->open(devname);
     }
@@ -3447,16 +3481,12 @@ FORCE_ALIGN ALCboolean ALC_APIENTRY alcReopenDeviceSOFT(ALCdevice *device,
         alcSetError(dev.get(), (e.errorCode() == al::backend_error::OutOfMemory)
             ? ALC_OUT_OF_MEMORY : ALC_INVALID_VALUE);
 
-        /* If the device is connected, not paused, and has contexts, ensure it
-         * continues playing.
-         */
-        if(dev->Connected.load(std::memory_order_relaxed) && !dev->Flags.test(DevicePaused)
-            && !dev->mContexts.load(std::memory_order_relaxed)->empty())
+        if(dev->Connected.load(std::memory_order_relaxed) && wasPlaying)
         {
             try {
                 auto backend = dev->Backend.get();
                 backend->start();
-                dev->Flags.set(DeviceRunning);
+                dev->mDeviceState = DeviceState::Playing;
             }
             catch(al::backend_exception &be) {
                 ERR("%s\n", be.what());
@@ -3467,6 +3497,7 @@ FORCE_ALIGN ALCboolean ALC_APIENTRY alcReopenDeviceSOFT(ALCdevice *device,
     }
     listlock.unlock();
     dev->Backend = std::move(newbackend);
+    dev->mDeviceState = DeviceState::Unprepared;
     TRACE("Reopened device %p, \"%s\"\n", voidp{dev.get()}, dev->DeviceName.c_str());
 
     /* Always return true even if resetting fails. It shouldn't fail, but this

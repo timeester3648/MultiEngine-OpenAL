@@ -29,7 +29,7 @@ class BFormatDec;
 namespace Bs2b {
 struct bs2b;
 } // namespace Bs2b
-struct Compressor;
+class Compressor;
 struct ContextBase;
 struct DirectHrtfState;
 struct HrtfStore;
@@ -161,8 +161,6 @@ enum {
 
     // Specifies if the DSP is paused at user request
     DevicePaused,
-    // Specifies if the device is currently running
-    DeviceRunning,
 
     // Specifies if the output plays directly on/in ears (headphones, headset,
     // ear buds, etc).
@@ -176,12 +174,13 @@ enum {
     DeviceFlagsCount
 };
 
-struct DeviceBase {
-    /* To avoid extraneous allocations, a 0-sized FlexArray<ContextBase*> is
-     * defined globally as a sharable object.
-     */
-    static al::FlexArray<ContextBase*> sEmptyContextArray;
+enum class DeviceState : uint8_t {
+    Unprepared,
+    Configured,
+    Playing
+};
 
+struct DeviceBase {
     std::atomic<bool> Connected{true};
     const DeviceType Type{};
 
@@ -205,6 +204,7 @@ struct DeviceBase {
 
     // Device flags
     std::bitset<DeviceFlagsCount> Flags{};
+    DeviceState mDeviceState{DeviceState::Unprepared};
 
     uint NumAuxSends{};
 
@@ -232,17 +232,14 @@ struct DeviceBase {
     static constexpr size_t MixerLineSize{BufferLineSize + DecoderBase::sMaxPadding};
     static constexpr size_t MixerChannelsMax{16};
     using MixerBufferLine = std::array<float,MixerLineSize>;
-    alignas(16) std::array<MixerBufferLine,MixerChannelsMax> mSampleData;
-    alignas(16) std::array<float,MixerLineSize+MaxResamplerPadding> mResampleData;
+    alignas(16) std::array<MixerBufferLine,MixerChannelsMax> mSampleData{};
+    alignas(16) std::array<float,MixerLineSize+MaxResamplerPadding> mResampleData{};
 
-    alignas(16) std::array<float,BufferLineSize> FilteredData;
-    union {
-        alignas(16) std::array<float,BufferLineSize+HrtfHistoryLength> HrtfSourceData;
-        alignas(16) std::array<float,BufferLineSize> NfcSampleData;
-    };
+    alignas(16) std::array<float,BufferLineSize> FilteredData{};
+    alignas(16) std::array<float,BufferLineSize+HrtfHistoryLength> ExtraSampleData{};
 
     /* Persistent storage for HRTF mixing. */
-    alignas(16) std::array<float2,BufferLineSize+HrirLength> HrtfAccumData;
+    alignas(16) std::array<float2,BufferLineSize+HrirLength> HrtfAccumData{};
 
     /* Mixing buffer used by the Dry mix and Real output. */
     al::vector<FloatBufferLine, 16> MixBuffer;
@@ -290,7 +287,7 @@ struct DeviceBase {
     std::atomic<uint> mMixCount{0u};
 
     // Contexts created on this device
-    std::atomic<al::FlexArray<ContextBase*>*> mContexts{nullptr};
+    al::atomic_unique_ptr<al::FlexArray<ContextBase*>> mContexts;
 
 
     DeviceBase(DeviceType type);
@@ -328,9 +325,8 @@ struct DeviceBase {
     /** Waits for the mixer to not be mixing or updating the clock. */
     [[nodiscard]] auto waitForMix() const noexcept -> uint
     {
-        uint refcount;
-        while((refcount=mMixCount.load(std::memory_order_acquire))&1) {
-        }
+        uint refcount{mMixCount.load(std::memory_order_acquire)};
+        while((refcount&1)) refcount = mMixCount.load(std::memory_order_acquire);
         return refcount;
     }
 
@@ -374,8 +370,6 @@ struct DeviceBase {
      */
     [[nodiscard]] auto channelIdxByName(Channel chan) const noexcept -> uint8_t
     { return RealOut.ChannelIndex[chan]; }
-
-    DISABLE_ALLOC()
 
 private:
     uint renderSamples(const uint numSamples);

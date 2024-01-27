@@ -24,10 +24,12 @@ namespace al {
 
 backend_exception::backend_exception(backend_error code, const char *msg, ...) : mErrorCode{code}
 {
+    /* NOLINTBEGIN(*-array-to-pointer-decay) */
     std::va_list args;
     va_start(args, msg);
     setMessage(msg, args);
     va_end(args);
+    /* NOLINTEND(*-array-to-pointer-decay) */
 }
 backend_exception::~backend_exception() = default;
 
@@ -45,7 +47,7 @@ uint BackendBase::availableSamples()
 
 ClockLatency BackendBase::getClockLatency()
 {
-    ClockLatency ret;
+    ClockLatency ret{};
 
     uint refcount;
     do {
@@ -58,8 +60,7 @@ ClockLatency BackendBase::getClockLatency()
      * any given time during playback. Without a more accurate measurement from
      * the output, this is an okay approximation.
      */
-    ret.Latency = std::max(std::chrono::seconds{mDevice->BufferSize-mDevice->UpdateSize},
-        std::chrono::seconds::zero());
+    ret.Latency = std::chrono::seconds{mDevice->BufferSize - mDevice->UpdateSize};
     ret.Latency /= mDevice->Frequency;
 
     return ret;

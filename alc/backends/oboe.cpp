@@ -4,8 +4,8 @@
 #include "oboe.h"
 
 #include <cassert>
+#include <cstdint>
 #include <cstring>
-#include <stdint.h>
 
 #include "alnumeric.h"
 #include "core/device.h"
@@ -17,7 +17,9 @@
 
 namespace {
 
-constexpr char device_name[] = "Oboe Default";
+using namespace std::string_view_literals;
+
+[[nodiscard]] constexpr auto GetDeviceName() noexcept { return "Oboe Default"sv; }
 
 
 struct OboePlayback final : public BackendBase, public oboe::AudioStreamCallback {
@@ -48,19 +50,18 @@ oboe::DataCallbackResult OboePlayback::onAudioReady(oboe::AudioStream *oboeStrea
     return oboe::DataCallbackResult::Continue;
 }
 
-void OboePlayback::onErrorAfterClose(oboe::AudioStream* audioStream, oboe::Result error)
+void OboePlayback::onErrorAfterClose(oboe::AudioStream*, oboe::Result error)
 {
-    if (error == oboe::Result::ErrorDisconnected) {
+    if(error == oboe::Result::ErrorDisconnected)
         mDevice->handleDisconnect("Oboe AudioStream was disconnected: %s", oboe::convertToText(error));
-    }
     TRACE("Error was %s", oboe::convertToText(error));
 }
 
 void OboePlayback::open(std::string_view name)
 {
     if(name.empty())
-        name = device_name;
-    else if(name != device_name)
+        name = GetDeviceName();
+    else if(name != GetDeviceName())
         throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
             static_cast<int>(name.length()), name.data()};
 
@@ -81,6 +82,7 @@ bool OboePlayback::reset()
     oboe::AudioStreamBuilder builder;
     builder.setDirection(oboe::Direction::Output);
     builder.setPerformanceMode(oboe::PerformanceMode::LowLatency);
+    builder.setUsage(oboe::Usage::Game);
     /* Don't let Oboe convert. We should be able to handle anything it gives
      * back.
      */
@@ -238,8 +240,8 @@ oboe::DataCallbackResult OboeCapture::onAudioReady(oboe::AudioStream*, void *aud
 void OboeCapture::open(std::string_view name)
 {
     if(name.empty())
-        name = device_name;
-    else if(name != device_name)
+        name = GetDeviceName();
+    else if(name != GetDeviceName())
         throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
             static_cast<int>(name.length()), name.data()};
 
@@ -345,8 +347,8 @@ std::string OboeBackendFactory::probe(BackendType type)
     {
     case BackendType::Playback:
     case BackendType::Capture:
-        /* Includes null char. */
-        return std::string{device_name, sizeof(device_name)};
+        /* Include null char. */
+        return std::string{GetDeviceName()} + '\0';
     }
     return std::string{};
 }

@@ -56,6 +56,7 @@ void ALCcontext::setError(ALenum errorCode, const char *msg, ...)
 {
     auto message = std::vector<char>(256);
 
+    /* NOLINTBEGIN(*-array-to-pointer-decay) */
     va_list args, args2;
     va_start(args, msg);
     va_copy(args2, args);
@@ -67,6 +68,7 @@ void ALCcontext::setError(ALenum errorCode, const char *msg, ...)
     }
     va_end(args2);
     va_end(args);
+    /* NOLINTEND(*-array-to-pointer-decay) */
 
     if(msglen >= 0)
         msg = message.data();
@@ -99,41 +101,39 @@ void ALCcontext::setError(ALenum errorCode, const char *msg, ...)
 /* Special-case alGetError since it (potentially) raises a debug signal and
  * returns a non-default value for a null context.
  */
-AL_API ALenum AL_APIENTRY alGetError(void) noexcept
+AL_API auto AL_APIENTRY alGetError() noexcept -> ALenum
 {
-    auto context = GetContextRef();
-    if(!context) UNLIKELY
+    if(auto context = GetContextRef()) LIKELY
+        return alGetErrorDirect(context.get());
+
+    static const ALenum deferror{[](const char *envname, const char *optname) -> ALenum
     {
-        static const ALenum deferror{[](const char *envname, const char *optname) -> ALenum
-        {
-            auto optstr = al::getenv(envname);
-            if(!optstr)
-                optstr = ConfigValueStr(nullptr, "game_compat", optname);
+        auto optstr = al::getenv(envname);
+        if(!optstr)
+            optstr = ConfigValueStr({}, "game_compat", optname);
 
-            if(optstr)
-            {
-                char *end{};
-                auto value = std::strtoul(optstr->c_str(), &end, 0);
-                if(end && *end == '\0' && value <= std::numeric_limits<ALenum>::max())
-                    return static_cast<ALenum>(value);
-                ERR("Invalid default error value: \"%s\"", optstr->c_str());
-            }
-            return AL_INVALID_OPERATION;
-        }("__ALSOFT_DEFAULT_ERROR", "default-error")};
-
-        WARN("Querying error state on null context (implicitly 0x%04x)\n", deferror);
-        if(TrapALError)
+        if(optstr)
         {
-#ifdef _WIN32
-            if(IsDebuggerPresent())
-                DebugBreak();
-#elif defined(SIGTRAP)
-            raise(SIGTRAP);
-#endif
+            char *end{};
+            auto value = std::strtoul(optstr->c_str(), &end, 0);
+            if(end && *end == '\0' && value <= std::numeric_limits<ALenum>::max())
+                return static_cast<ALenum>(value);
+            ERR("Invalid default error value: \"%s\"", optstr->c_str());
         }
-        return deferror;
+        return AL_INVALID_OPERATION;
+    }("__ALSOFT_DEFAULT_ERROR", "default-error")};
+
+    WARN("Querying error state on null context (implicitly 0x%04x)\n", deferror);
+    if(TrapALError)
+    {
+#ifdef _WIN32
+        if(IsDebuggerPresent())
+            DebugBreak();
+#elif defined(SIGTRAP)
+        raise(SIGTRAP);
+#endif
     }
-    return alGetErrorDirect(context.get());
+    return deferror;
 }
 
 FORCE_ALIGN ALenum AL_APIENTRY alGetErrorDirect(ALCcontext *context) noexcept

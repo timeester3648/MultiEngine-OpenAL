@@ -25,8 +25,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-#include <stdlib.h>
-#include <stdio.h>
+#include <cstdio>
+#include <cstdlib>
 #include <memory.h>
 
 #include <wtypes.h>
@@ -55,6 +55,7 @@
 #include <future>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -62,6 +63,7 @@
 #include "alc/alconfig.h"
 #include "alnumeric.h"
 #include "alspan.h"
+#include "alstring.h"
 #include "althrd_setname.h"
 #include "comptr.h"
 #include "core/converter.h"
@@ -105,9 +107,12 @@ DEFINE_PROPERTYKEY(PKEY_AudioEndpoint_GUID, 0x1da5d803, 0xd492, 0x4edd, 0x8c, 0x
 
 namespace {
 
+using namespace std::string_view_literals;
 using std::chrono::nanoseconds;
 using std::chrono::milliseconds;
 using std::chrono::seconds;
+
+[[nodiscard]] constexpr auto GetDevicePrefix() noexcept { return "OpenAL Soft on "sv; }
 
 using ReferenceTime = std::chrono::duration<REFERENCE_TIME,std::ratio<1,10'000'000>>;
 
@@ -172,10 +177,6 @@ constexpr AudioObjectType ChannelMask_X714{AudioObjectType_FrontLeft | AudioObje
     | AudioObjectType_TopBackRight};
 
 
-constexpr char DevNameHead[] = "OpenAL Soft on ";
-constexpr size_t DevNameHeadLen{std::size(DevNameHead) - 1};
-
-
 template<typename... Ts>
 struct overloaded : Ts... { using Ts::operator()...; };
 
@@ -201,16 +202,16 @@ constexpr uint RefTime2Samples(const ReferenceTime &val, T srate) noexcept
 
 
 class GuidPrinter {
-    char mMsg[64];
+    std::array<char,64> mMsg;
 
 public:
     GuidPrinter(const GUID &guid)
     {
-        std::snprintf(mMsg, std::size(mMsg), "{%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
+        std::snprintf(mMsg.data(), mMsg.size(), "{%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}",
             DWORD{guid.Data1}, guid.Data2, guid.Data3, guid.Data4[0], guid.Data4[1], guid.Data4[2],
             guid.Data4[3], guid.Data4[4], guid.Data4[5], guid.Data4[6], guid.Data4[7]);
     }
-    const char *c_str() const { return mMsg; }
+    [[nodiscard]] auto c_str() const -> const char* { return mMsg.data(); }
 };
 
 struct PropVariant {
@@ -270,13 +271,13 @@ private:
 struct DeviceListLock : public std::unique_lock<DeviceList> {
     using std::unique_lock<DeviceList>::unique_lock;
 
-    auto& getPlaybackList() const noexcept { return mutex()->mPlayback; }
-    auto& getCaptureList() const noexcept { return mutex()->mCapture; }
+    [[nodiscard]] auto& getPlaybackList() const noexcept { return mutex()->mPlayback; }
+    [[nodiscard]] auto& getCaptureList() const noexcept { return mutex()->mCapture; }
 
     void setPlaybackDefaultId(std::wstring_view devid) const { mutex()->mPlaybackDefaultId = devid; }
-    std::wstring_view getPlaybackDefaultId() const noexcept { return mutex()->mPlaybackDefaultId; }
+    [[nodiscard]] auto getPlaybackDefaultId() const noexcept -> std::wstring_view { return mutex()->mPlaybackDefaultId; }
     void setCaptureDefaultId(std::wstring_view devid) const { mutex()->mCaptureDefaultId = devid; }
-    std::wstring_view getCaptureDefaultId() const noexcept { return mutex()->mCaptureDefaultId; }
+    [[nodiscard]] auto getCaptureDefaultId() const noexcept -> std::wstring_view { return mutex()->mCaptureDefaultId; }
 };
 
 DeviceList gDeviceList;
@@ -302,8 +303,9 @@ using DeviceHandle = ComPtr<IMMDevice>;
 using NameGUIDPair = std::pair<std::string,std::string>;
 static NameGUIDPair GetDeviceNameAndGuid(const DeviceHandle &device)
 {
-    static constexpr char UnknownName[]{"Unknown Device Name"};
-    static constexpr char UnknownGuid[]{"Unknown Device GUID"};
+    constexpr auto UnknownName = "Unknown Device Name"sv;
+    constexpr auto UnknownGuid = "Unknown Device GUID"sv;
+
 #if !defined(ALSOFT_UWP)
     std::string name, guid;
 
@@ -312,7 +314,7 @@ static NameGUIDPair GetDeviceNameAndGuid(const DeviceHandle &device)
     if(FAILED(hr))
     {
         WARN("OpenPropertyStore failed: 0x%08lx\n", hr);
-        return std::make_pair(UnknownName, UnknownGuid);
+        return {std::string{UnknownName}, std::string{UnknownGuid}};
     }
 
     PropVariant pvprop;
@@ -351,7 +353,7 @@ static NameGUIDPair GetDeviceNameAndGuid(const DeviceHandle &device)
 #endif
     if(name.empty()) name = UnknownName;
     if(guid.empty()) guid = UnknownGuid;
-    return std::make_pair(std::move(name), std::move(guid));
+    return {std::move(name), std::move(guid)};
 }
 #if !defined(ALSOFT_UWP)
 EndpointFormFactor GetDeviceFormfactor(IMMDevice *device)
@@ -384,9 +386,9 @@ struct DeviceHelper final : public IActivateAudioInterfaceCompletionHandler
 struct DeviceHelper final : private IMMNotificationClient
 #endif
 {
+#if defined(ALSOFT_UWP)
     DeviceHelper()
     {
-#if defined(ALSOFT_UWP)
         /* TODO: UWP also needs to watch for device added/removed events and
          * dynamically add/remove devices from the lists.
          */
@@ -411,8 +413,10 @@ struct DeviceHelper final : private IMMNotificationClient
                     msg);
             }
             });
-#endif
     }
+#else
+    DeviceHelper() = default;
+#endif
     ~DeviceHelper()
     {
 #if defined(ALSOFT_UWP)
@@ -926,7 +930,7 @@ struct WasapiProxy {
         std::promise<HRESULT> promise;
         std::future<HRESULT> future{promise.get_future()};
         {
-            std::lock_guard<std::mutex> _{mMsgQueueLock};
+            std::lock_guard<std::mutex> msglock{mMsgQueueLock};
             mMsgQueue.emplace_back(Msg{type, this, param, std::move(promise)});
         }
         mMsgQueueCond.notify_one();
@@ -938,7 +942,7 @@ struct WasapiProxy {
         std::promise<HRESULT> promise;
         std::future<HRESULT> future{promise.get_future()};
         {
-            std::lock_guard<std::mutex> _{mMsgQueueLock};
+            std::lock_guard<std::mutex> msglock{mMsgQueueLock};
             mMsgQueue.emplace_back(Msg{type, nullptr, {}, std::move(promise)});
         }
         mMsgQueueCond.notify_one();
@@ -1071,7 +1075,7 @@ struct WasapiPlayback final : public BackendBase, WasapiProxy {
     HANDLE mNotifyEvent{nullptr};
 
     UINT32 mOrigBufferSize{}, mOrigUpdateSize{};
-    std::unique_ptr<char[]> mResampleBuffer{};
+    std::vector<char> mResampleBuffer{};
     uint mBufferFilled{0};
     SampleConverterPtr mResampler;
 
@@ -1082,8 +1086,6 @@ struct WasapiPlayback final : public BackendBase, WasapiProxy {
 
     std::atomic<bool> mKillNow{true};
     std::thread mThread;
-
-    DEF_NEWDEL(WasapiPlayback)
 };
 
 WasapiPlayback::~WasapiPlayback()
@@ -1146,14 +1148,14 @@ FORCE_ALIGN int WasapiPlayback::mixerProc()
         {
             if(mResampler)
             {
-                std::lock_guard<std::mutex> _{mMutex};
+                std::lock_guard<std::mutex> dlock{mMutex};
                 for(UINT32 done{0};done < len;)
                 {
                     if(mBufferFilled == 0)
                     {
-                        mDevice->renderSamples(mResampleBuffer.get(), mDevice->UpdateSize,
+                        mDevice->renderSamples(mResampleBuffer.data(), mDevice->UpdateSize,
                             mFormat.Format.nChannels);
-                        resbufferptr = mResampleBuffer.get();
+                        resbufferptr = mResampleBuffer.data();
                         mBufferFilled = mDevice->UpdateSize;
                     }
 
@@ -1166,7 +1168,7 @@ FORCE_ALIGN int WasapiPlayback::mixerProc()
             }
             else
             {
-                std::lock_guard<std::mutex> _{mMutex};
+                std::lock_guard<std::mutex> dlock{mMutex};
                 mDevice->renderSamples(buffer, len, mFormat.Format.nChannels);
                 mPadding.store(written + len, std::memory_order_relaxed);
             }
@@ -1249,7 +1251,7 @@ FORCE_ALIGN int WasapiPlayback::mixerSpatialProc()
                     tmpbuffers.resize(buffers.size());
                     resbuffers.resize(buffers.size());
                     for(size_t i{0};i < tmpbuffers.size();++i)
-                        resbuffers[i] = reinterpret_cast<float*>(mResampleBuffer.get()) +
+                        resbuffers[i] = reinterpret_cast<float*>(mResampleBuffer.data()) +
                             mDevice->UpdateSize*i;
                 }
             }
@@ -1270,7 +1272,7 @@ FORCE_ALIGN int WasapiPlayback::mixerSpatialProc()
                 mDevice->renderSamples(buffers, framesToDo);
             else
             {
-                std::lock_guard<std::mutex> _{mMutex};
+                std::lock_guard<std::mutex> dlock{mMutex};
                 for(UINT32 pos{0};pos < framesToDo;)
                 {
                     if(mBufferFilled == 0)
@@ -1314,11 +1316,8 @@ void WasapiPlayback::open(std::string_view name)
             "Failed to create notify events"};
     }
 
-    if(name.length() >= DevNameHeadLen
-        && std::strncmp(name.data(), DevNameHead, DevNameHeadLen) == 0)
-    {
-        name = name.substr(DevNameHeadLen);
-    }
+    if(const auto prefix = GetDevicePrefix(); al::starts_with(name, prefix))
+        name = name.substr(prefix.size());
 
     mOpenStatus = pushMessage(MsgType::OpenDevice, name).get();
     if(FAILED(mOpenStatus))
@@ -1361,9 +1360,9 @@ HRESULT WasapiPlayback::openProxy(std::string_view name)
         return hr;
     }
     if(!devname.empty())
-        mDevice->DeviceName = DevNameHead + std::move(devname);
+        mDevice->DeviceName = std::string{GetDevicePrefix()}+std::move(devname);
     else
-        mDevice->DeviceName = DevNameHead + GetDeviceNameAndGuid(mMMDev).first;
+        mDevice->DeviceName = std::string{GetDevicePrefix()}+GetDeviceNameAndGuid(mMMDev).first;
 
     return S_OK;
 }
@@ -1496,7 +1495,7 @@ void WasapiPlayback::prepareFormat(WAVEFORMATEXTENSIBLE &OutputType)
 
 void WasapiPlayback::finalizeFormat(WAVEFORMATEXTENSIBLE &OutputType)
 {
-    if(!GetConfigValueBool(mDevice->DeviceName.c_str(), "wasapi", "allow-resampler", true))
+    if(!GetConfigValueBool(mDevice->DeviceName, "wasapi", "allow-resampler", true))
         mDevice->Frequency = OutputType.Format.nSamplesPerSec;
     else
         mDevice->Frequency = minu(mDevice->Frequency, OutputType.Format.nSamplesPerSec);
@@ -1610,7 +1609,7 @@ bool WasapiPlayback::reset()
 
 HRESULT WasapiPlayback::resetProxy()
 {
-    if(GetConfigValueBool(mDevice->DeviceName.c_str(), "wasapi", "spatial-api", false))
+    if(GetConfigValueBool(mDevice->DeviceName, "wasapi", "spatial-api", false))
     {
         auto &audio = mAudio.emplace<SpatialDevice>();
         HRESULT hr{sDeviceHelper->activateAudioClient(mMMDev, __uuidof(ISpatialAudioClient),
@@ -1775,7 +1774,7 @@ HRESULT WasapiPlayback::resetProxy()
         mDevice->Flags.reset(DirectEar).set(Virtualization);
         if(streamParams.StaticObjectTypeMask == ChannelMask_Stereo)
             mDevice->FmtChans = DevFmtStereo;
-        if(!GetConfigValueBool(mDevice->DeviceName.c_str(), "wasapi", "allow-resampler", true))
+        if(!GetConfigValueBool(mDevice->DeviceName, "wasapi", "allow-resampler", true))
             mDevice->Frequency = OutputType.Format.nSamplesPerSec;
         else
             mDevice->Frequency = minu(mDevice->Frequency, OutputType.Format.nSamplesPerSec);
@@ -1819,7 +1818,8 @@ HRESULT WasapiPlayback::resetProxy()
         mDevice->BufferSize = mDevice->UpdateSize*2;
 
         mResampler = nullptr;
-        mResampleBuffer = nullptr;
+        mResampleBuffer.clear();
+        mResampleBuffer.shrink_to_fit();
         mBufferFilled = 0;
         if(mDevice->Frequency != mFormat.Format.nSamplesPerSec)
         {
@@ -1828,7 +1828,7 @@ HRESULT WasapiPlayback::resetProxy()
             mResampler = SampleConverter::Create(mDevice->FmtType, mDevice->FmtType,
                 channelCount, mDevice->Frequency, mFormat.Format.nSamplesPerSec,
                 Resampler::FastBSinc24);
-            mResampleBuffer = std::make_unique<char[]>(size_t{mDevice->UpdateSize} * channelCount *
+            mResampleBuffer.resize(size_t{mDevice->UpdateSize} * channelCount *
                 mFormat.Format.wBitsPerSample / 8);
 
             TRACE("Created converter for %s/%s format, dst: %luhz (%u), src: %uhz (%u)\n",
@@ -1950,15 +1950,16 @@ no_spatial:
         mDevice->BufferSize/2);
 
     mResampler = nullptr;
-    mResampleBuffer = nullptr;
+    mResampleBuffer.clear();
+    mResampleBuffer.shrink_to_fit();
     mBufferFilled = 0;
     if(mDevice->Frequency != mFormat.Format.nSamplesPerSec)
     {
         mResampler = SampleConverter::Create(mDevice->FmtType, mDevice->FmtType,
             mFormat.Format.nChannels, mDevice->Frequency, mFormat.Format.nSamplesPerSec,
             Resampler::FastBSinc24);
-        mResampleBuffer = std::make_unique<char[]>(size_t{mDevice->UpdateSize} *
-            mFormat.Format.nChannels * mFormat.Format.wBitsPerSample / 8);
+        mResampleBuffer.resize(size_t{mDevice->UpdateSize} * mFormat.Format.nChannels *
+            mFormat.Format.wBitsPerSample / 8);
 
         TRACE("Created converter for %s/%s format, dst: %luhz (%u), src: %uhz (%u)\n",
             DevFmtChannelsString(mDevice->FmtChans), DevFmtTypeString(mDevice->FmtType),
@@ -2071,7 +2072,7 @@ ClockLatency WasapiPlayback::getClockLatency()
 {
     ClockLatency ret;
 
-    std::lock_guard<std::mutex> _{mMutex};
+    std::lock_guard<std::mutex> dlock{mMutex};
     ret.ClockTime = mDevice->getClockTime();
     ret.Latency  = seconds{mPadding.load(std::memory_order_relaxed)};
     ret.Latency /= mFormat.Format.nSamplesPerSec;
@@ -2117,8 +2118,6 @@ struct WasapiCapture final : public BackendBase, WasapiProxy {
 
     std::atomic<bool> mKillNow{true};
     std::thread mThread;
-
-    DEF_NEWDEL(WasapiCapture)
 };
 
 WasapiCapture::~WasapiCapture()
@@ -2238,11 +2237,8 @@ void WasapiCapture::open(std::string_view name)
             "Failed to create notify events"};
     }
 
-    if(name.length() >= DevNameHeadLen
-        && std::strncmp(name.data(), DevNameHead, DevNameHeadLen) == 0)
-    {
-        name = name.substr(DevNameHeadLen);
-    }
+    if(const auto prefix = GetDevicePrefix(); al::starts_with(name, prefix))
+        name = name.substr(prefix.size());
 
     mOpenStatus = pushMessage(MsgType::OpenDevice, name).get();
     if(FAILED(mOpenStatus))
@@ -2294,9 +2290,9 @@ HRESULT WasapiCapture::openProxy(std::string_view name)
     }
     mClient = nullptr;
     if(!devname.empty())
-        mDevice->DeviceName = DevNameHead + std::move(devname);
+        mDevice->DeviceName = std::string{GetDevicePrefix()}+std::move(devname);
     else
-        mDevice->DeviceName = DevNameHead + GetDeviceNameAndGuid(mMMDev).first;
+        mDevice->DeviceName = std::string{GetDevicePrefix()}+GetDeviceNameAndGuid(mMMDev).first;
 
     return S_OK;
 }
@@ -2696,11 +2692,12 @@ std::string WasapiBackendFactory::probe(BackendType type)
                     /* +1 to also append the null char (to ensure a null-
                      * separated list and double-null terminated list).
                      */
-                    outnames.append(DevNameHead).append(entry.name.c_str(), entry.name.length()+1);
+                    outnames.append(GetDevicePrefix()).append(entry.name.c_str(),
+                        entry.name.length()+1);
                     continue;
                 }
                 /* Default device goes first. */
-                std::string name{DevNameHead + entry.name};
+                std::string name{std::string{GetDevicePrefix()} + entry.name};
                 outnames.insert(0, name.c_str(), name.length()+1);
             }
         }
@@ -2713,10 +2710,11 @@ std::string WasapiBackendFactory::probe(BackendType type)
             {
                 if(entry.devid != defaultId)
                 {
-                    outnames.append(DevNameHead).append(entry.name.c_str(), entry.name.length()+1);
+                    outnames.append(GetDevicePrefix()).append(entry.name.c_str(),
+                        entry.name.length()+1);
                     continue;
                 }
-                std::string name{DevNameHead + entry.name};
+                std::string name{std::string{GetDevicePrefix()} + entry.name};
                 outnames.insert(0, name.c_str(), name.length()+1);
             }
         }
