@@ -2,9 +2,9 @@ void main(MultiBuild::Workspace& workspace) {
 	auto project = workspace.create_project(".");
 	auto properties = project.properties();
 
-	properties.name("OpenAL");
+	project.name("OpenAL");
 	properties.binary_object_kind(MultiBuild::BinaryObjectKind::eSharedLib);
-	properties.license("./COPYING");
+	project.license("./COPYING");
 	properties.tags("use_header_only_mle");
 
 	properties.project_includes("Intrinsics");
