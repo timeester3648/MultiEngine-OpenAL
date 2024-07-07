@@ -55,7 +55,7 @@ void main(MultiBuild::Workspace& workspace) {
 			"ALC_API=__declspec(dllexport)"
 		});
 
-		properties.exclude_files({
+		properties.excluded_files({
 			"./core/rtkit.cpp",
 			"./core/dbus_wrap.cpp",
 			"./core/mixer/mixer_neon.cpp",
