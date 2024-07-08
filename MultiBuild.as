@@ -41,12 +41,12 @@ void main(MultiBuild::Workspace& workspace) {
 	});
 
 	{
-		MultiBuild::ScopedFilter _(workspace, "project.compiler:VisualCpp");
+		MultiBuild::ScopedFilter _(project, "project.compiler:VisualCpp");
 		properties.disable_warnings({ "5030", "4065", "4834", "4267", "4067", "4244", "4018", "4804" });
 	}
 
 	{
-		MultiBuild::ScopedFilter _(workspace, "config.platform:Windows");
+		MultiBuild::ScopedFilter _(project, "config.platform:Windows");
 		properties.defines({
 			"AL_ALEXT_PROTOTYPES", 
 			"RESTRICT=__restrict", 
