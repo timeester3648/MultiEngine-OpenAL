@@ -47,8 +47,6 @@ void main(MultiBuild::Workspace& workspace) {
 
 	{
 		MultiBuild::ScopedFilter _(project, "config.platform:Windows");
-		properties.library_links("Winmm");
-
 		properties.defines({
 			"AL_ALEXT_PROTOTYPES", 
 			"RESTRICT=__restrict", 
