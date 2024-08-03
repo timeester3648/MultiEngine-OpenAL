@@ -42,7 +42,7 @@ void main(MultiBuild::Workspace& workspace) {
 
 	{
 		MultiBuild::ScopedFilter _(project, "project.compiler:VisualCpp");
-		properties.disable_warnings({ "5030", "4065", "4834", "4267", "4067", "4244", "4018", "4804" });
+		properties.disable_warnings({ "5030", "4065", "4834", "4267", "4067", "4244", "4018", "4804", "4996" });
 	}
 
 	{
