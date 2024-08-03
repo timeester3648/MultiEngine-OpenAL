@@ -44,7 +44,7 @@ void DirectorySearch(const std::filesystem::path &path, const std::string_view e
         if(!fs::exists(fpath))
             return;
 
-        TRACE("Searching %s for *%.*s\n", fpath.u8string().c_str(), al::sizei(ext), ext.data());
+        TRACE("Searching %s for *%.*s\n", fpath.string().c_str(), al::sizei(ext), ext.data());
         for(auto&& dirent : fs::directory_iterator{fpath})
         {
             auto&& entrypath = dirent.path();
@@ -52,8 +52,8 @@ void DirectorySearch(const std::filesystem::path &path, const std::string_view e
                 continue;
 
             if(fs::status(entrypath).type() == fs::file_type::regular
-                && al::case_compare(entrypath.extension().u8string(), ext) == 0)
-                results->emplace_back(entrypath.u8string());
+                && al::case_compare(entrypath.extension().string(), ext) == 0)
+                results->emplace_back(entrypath.string());
         }
     }
     catch(std::exception& e) {

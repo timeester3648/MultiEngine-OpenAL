@@ -6,6 +6,8 @@ void main(MultiBuild::Workspace& workspace) {
 	properties.binary_object_kind(MultiBuild::BinaryObjectKind::eSharedLib);
 	project.license("./COPYING");
 	properties.tags("use_header_only_mle");
+	// TODO: remove when compilation errors fixed
+	properties.cpp_dialect(MultiBuild::LangDialectCpp::e20);
 
 	properties.project_includes("Intrinsics");
 
@@ -42,7 +44,7 @@ void main(MultiBuild::Workspace& workspace) {
 
 	{
 		MultiBuild::ScopedFilter _(project, "project.compiler:VisualCpp");
-		properties.disable_warnings({ "5030", "4065", "4834", "4267", "4067", "4244", "4018", "4804", "4996" });
+		properties.disable_warnings({ "5030", "4065", "4834", "4267", "4067", "4244", "4018", "4804", "4996", "4060" });
 	}
 
 	{
