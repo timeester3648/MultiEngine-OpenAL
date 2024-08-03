@@ -45,6 +45,7 @@
 #include "alc/alconfig.h"
 #include "almalloc.h"
 #include "alnumeric.h"
+#include "alstring.h"
 #include "althrd_setname.h"
 #include "core/device.h"
 #include "core/helpers.h"
@@ -284,7 +285,7 @@ OSSPlayback::~OSSPlayback()
 int OSSPlayback::mixerProc()
 {
     SetRTPriority();
-    althrd_setname(MIXER_THREAD_NAME);
+    althrd_setname(GetMixerThreadName());
 
     const size_t frame_step{mDevice->channelsFromFmt()};
     const size_t frame_size{mDevice->frameSizeFromFmt()};
@@ -296,8 +297,7 @@ int OSSPlayback::mixerProc()
         pollitem.fd = mFd;
         pollitem.events = POLLOUT;
 
-        int pret{poll(&pollitem, 1, 1000)};
-        if(pret < 0)
+        if(int pret{poll(&pollitem, 1, 1000)}; pret < 0)
         {
             if(errno == EINTR || errno == EAGAIN)
                 continue;
@@ -306,18 +306,18 @@ int OSSPlayback::mixerProc()
             mDevice->handleDisconnect("Failed waiting for playback buffer: %s", errstr.c_str());
             break;
         }
-        else if(pret == 0)
+        else if(pret == 0) /* NOLINT(*-else-after-return) 'pret' is local to the if/else blocks */
         {
             WARN("poll timeout\n");
             continue;
         }
 
-        std::byte *write_ptr{mMixData.data()};
-        size_t to_write{mMixData.size()};
-        mDevice->renderSamples(write_ptr, static_cast<uint>(to_write/frame_size), frame_step);
-        while(to_write > 0 && !mKillNow.load(std::memory_order_acquire))
+        al::span write_buf{mMixData};
+        mDevice->renderSamples(write_buf.data(), static_cast<uint>(write_buf.size()/frame_size),
+            frame_step);
+        while(!write_buf.empty() && !mKillNow.load(std::memory_order_acquire))
         {
-            ssize_t wrote{write(mFd, write_ptr, to_write)};
+            ssize_t wrote{write(mFd, write_buf.data(), write_buf.size())};
             if(wrote < 0)
             {
                 if(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
@@ -328,8 +328,7 @@ int OSSPlayback::mixerProc()
                 break;
             }
 
-            to_write -= static_cast<size_t>(wrote);
-            write_ptr += wrote;
+            write_buf = write_buf.subspan(static_cast<size_t>(wrote));
         }
     }
 
@@ -353,7 +352,7 @@ void OSSPlayback::open(std::string_view name)
         );
         if(iter == PlaybackDevices.cend())
             throw al::backend_exception{al::backend_error::NoDevice,
-                "Device name \"%.*s\" not found", static_cast<int>(name.length()), name.data()};
+                "Device name \"%.*s\" not found", al::sizei(name), name.data()};
         devname = iter->device_name.c_str();
     }
 
@@ -396,7 +395,7 @@ bool OSSPlayback::reset()
     uint ossSpeed{mDevice->Frequency};
     uint frameSize{numChannels * mDevice->bytesFromFmt()};
     /* According to the OSS spec, 16 bytes (log2(16)) is the minimum. */
-    uint log2FragmentSize{maxu(log2i(mDevice->UpdateSize*frameSize), 4)};
+    uint log2FragmentSize{std::max(log2i(mDevice->UpdateSize*frameSize), 4u)};
     uint numFragmentsLogSize{(periods << 16) | log2FragmentSize};
 
     audio_buf_info info{};
@@ -494,7 +493,7 @@ OSScapture::~OSScapture()
 int OSScapture::recordProc()
 {
     SetRTPriority();
-    althrd_setname(RECORD_THREAD_NAME);
+    althrd_setname(GetRecordThreadName());
 
     const size_t frame_size{mDevice->frameSizeFromFmt()};
     while(!mKillNow.load(std::memory_order_acquire))
@@ -503,8 +502,7 @@ int OSScapture::recordProc()
         pollitem.fd = mFd;
         pollitem.events = POLLIN;
 
-        int sret{poll(&pollitem, 1, 1000)};
-        if(sret < 0)
+        if(int pret{poll(&pollitem, 1, 1000)}; pret < 0)
         {
             if(errno == EINTR || errno == EAGAIN)
                 continue;
@@ -513,7 +511,7 @@ int OSScapture::recordProc()
             mDevice->handleDisconnect("Failed to check capture samples: %s", errstr.c_str());
             break;
         }
-        else if(sret == 0)
+        else if(pret == 0) /* NOLINT(*-else-after-return) 'pret' is local to the if/else blocks */
         {
             WARN("poll timeout\n");
             continue;
@@ -554,7 +552,7 @@ void OSScapture::open(std::string_view name)
         );
         if(iter == CaptureDevices.cend())
             throw al::backend_exception{al::backend_error::NoDevice,
-                "Device name \"%.*s\" not found", static_cast<int>(name.length()), name.data()};
+                "Device name \"%.*s\" not found", al::sizei(name), name.data()};
         devname = iter->device_name.c_str();
     }
 
@@ -588,7 +586,7 @@ void OSScapture::open(std::string_view name)
     uint frameSize{numChannels * mDevice->bytesFromFmt()};
     uint ossSpeed{mDevice->Frequency};
     /* according to the OSS spec, 16 bytes are the minimum */
-    uint log2FragmentSize{maxu(log2i(mDevice->BufferSize * frameSize / periods), 4)};
+    uint log2FragmentSize{std::max(log2i(mDevice->BufferSize * frameSize / periods), 4u)};
     uint numFragmentsLogSize{(periods << 16) | log2FragmentSize};
 
     audio_buf_info info{};
@@ -670,18 +668,13 @@ bool OSSBackendFactory::init()
 bool OSSBackendFactory::querySupport(BackendType type)
 { return (type == BackendType::Playback || type == BackendType::Capture); }
 
-std::string OSSBackendFactory::probe(BackendType type)
+auto OSSBackendFactory::enumerate(BackendType type) -> std::vector<std::string>
 {
-    std::string outnames;
-
+    std::vector<std::string> outnames;
     auto add_device = [&outnames](const DevMap &entry) -> void
     {
-        struct stat buf;
-        if(stat(entry.device_name.c_str(), &buf) == 0)
-        {
-            /* Includes null char. */
-            outnames.append(entry.name.c_str(), entry.name.length()+1);
-        }
+        if(struct stat buf{}; stat(entry.device_name.c_str(), &buf) == 0)
+            outnames.emplace_back(entry.name);
     };
 
     switch(type)
@@ -689,12 +682,14 @@ std::string OSSBackendFactory::probe(BackendType type)
     case BackendType::Playback:
         PlaybackDevices.clear();
         ALCossListPopulate(PlaybackDevices, DSP_CAP_OUTPUT);
+        outnames.reserve(PlaybackDevices.size());
         std::for_each(PlaybackDevices.cbegin(), PlaybackDevices.cend(), add_device);
         break;
 
     case BackendType::Capture:
         CaptureDevices.clear();
         ALCossListPopulate(CaptureDevices, DSP_CAP_INPUT);
+        outnames.reserve(CaptureDevices.size());
         std::for_each(CaptureDevices.cbegin(), CaptureDevices.cend(), add_device);
         break;
     }

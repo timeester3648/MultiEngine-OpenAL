@@ -25,23 +25,25 @@
 #include <cmath>
 #include <complex>
 #include <cstdlib>
-#include <iterator>
+#include <variant>
 
 #include "alc/effects/base.h"
 #include "alcomplex.h"
-#include "almalloc.h"
 #include "alnumbers.h"
 #include "alnumeric.h"
 #include "alspan.h"
+#include "core/ambidefs.h"
 #include "core/bufferline.h"
 #include "core/context.h"
-#include "core/devformat.h"
 #include "core/device.h"
+#include "core/effects/base.h"
 #include "core/effectslot.h"
 #include "core/mixer.h"
 #include "core/mixer/defs.h"
 #include "intrusive_ptr.h"
+#include "opthelpers.h"
 
+struct BufferStorage;
 
 namespace {
 
@@ -133,7 +135,7 @@ void FshifterState::update(const ContextBase *context, const EffectSlot *slot,
     const DeviceBase *device{context->mDevice};
 
     const float step{props.Frequency / static_cast<float>(device->Frequency)};
-    mPhaseStep[0] = mPhaseStep[1] = fastf2u(minf(step, 1.0f) * MixerFracOne);
+    mPhaseStep[0] = mPhaseStep[1] = fastf2u(std::min(step, 1.0f) * MixerFracOne);
 
     switch(props.LeftDirection)
     {
@@ -180,7 +182,7 @@ void FshifterState::process(const size_t samplesToDo, const al::span<const Float
 {
     for(size_t base{0u};base < samplesToDo;)
     {
-        size_t todo{minz(HilStep-mCount, samplesToDo-base)};
+        size_t todo{std::min(HilStep-mCount, samplesToDo-base)};
 
         /* Fill FIFO buffer with samples data */
         const size_t pos{mPos};
@@ -218,25 +220,27 @@ void FshifterState::process(const size_t samplesToDo, const al::span<const Float
     }
 
     /* Process frequency shifter using the analytic signal obtained. */
-    float *RESTRICT BufferOut{al::assume_aligned<16>(mBufferOut.data())};
     for(size_t c{0};c < 2;++c)
     {
+        const double sign{mSign[c]};
         const uint phase_step{mPhaseStep[c]};
         uint phase_idx{mPhase[c]};
-        for(size_t k{0};k < samplesToDo;++k)
-        {
-            const double phase{phase_idx * (al::numbers::pi*2.0 / MixerFracOne)};
-            BufferOut[k] = static_cast<float>(mOutdata[k].real()*std::cos(phase) +
-                mOutdata[k].imag()*std::sin(phase)*mSign[c]);
+        std::transform(mOutdata.cbegin(), mOutdata.cbegin()+samplesToDo, mBufferOut.begin(),
+            [&phase_idx,phase_step,sign](const complex_d &in) -> float
+            {
+                const double phase{phase_idx * (al::numbers::pi*2.0 / MixerFracOne)};
+                const auto out = static_cast<float>(in.real()*std::cos(phase) +
+                    in.imag()*std::sin(phase)*sign);
 
-            phase_idx += phase_step;
-            phase_idx &= MixerFracMask;
-        }
+                phase_idx += phase_step;
+                phase_idx &= MixerFracMask;
+                return out;
+            });
         mPhase[c] = phase_idx;
 
         /* Now, mix the processed sound data to the output. */
-        MixSamples({BufferOut, samplesToDo}, samplesOut, mGains[c].Current.data(),
-            mGains[c].Target.data(), maxz(samplesToDo, 512), 0);
+        MixSamples(al::span{mBufferOut}.first(samplesToDo), samplesOut, mGains[c].Current,
+            mGains[c].Target, std::max(samplesToDo, 512_uz), 0);
     }
 }
 

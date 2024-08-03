@@ -39,6 +39,7 @@
 #include "alc/alconfig.h"
 #include "almalloc.h"
 #include "alnumeric.h"
+#include "alstring.h"
 #include "althrd_setname.h"
 #include "core/device.h"
 #include "core/helpers.h"
@@ -123,7 +124,7 @@ int WaveBackend::mixerProc()
 {
     const milliseconds restTime{mDevice->UpdateSize*1000/mDevice->Frequency / 2};
 
-    althrd_setname(MIXER_THREAD_NAME);
+    althrd_setname(GetMixerThreadName());
 
     const size_t frameStep{mDevice->channelsFromFmt()};
     const size_t frameSize{mDevice->frameSizeFromFmt()};
@@ -204,7 +205,7 @@ void WaveBackend::open(std::string_view name)
         name = GetDeviceName();
     else if(name != GetDeviceName())
         throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
-            static_cast<int>(name.length()), name.data()};
+            al::sizei(name), name.data()};
 
     /* There's only one "device", so if it's already open, we're done. */
     if(mFile) return;
@@ -263,6 +264,9 @@ bool WaveBackend::reset()
     case DevFmtX51: chanmask = 0x01 | 0x02 | 0x04 | 0x08 | 0x200 | 0x400; break;
     case DevFmtX61: chanmask = 0x01 | 0x02 | 0x04 | 0x08 | 0x100 | 0x200 | 0x400; break;
     case DevFmtX71: chanmask = 0x01 | 0x02 | 0x04 | 0x08 | 0x010 | 0x020 | 0x200 | 0x400; break;
+    case DevFmtX7144:
+        mDevice->FmtChans = DevFmtX714;
+        [[fallthrough]];
     case DevFmtX714:
         chanmask = 0x01 | 0x02 | 0x04 | 0x08 | 0x010 | 0x020 | 0x200 | 0x400 | 0x1000 | 0x4000
             | 0x8000 | 0x20000;
@@ -271,7 +275,7 @@ bool WaveBackend::reset()
     case DevFmtX3D71: chanmask = 0x01 | 0x02 | 0x04 | 0x08 | 0x010 | 0x020 | 0x200 | 0x400; break;
     case DevFmtAmbi3D:
         /* .amb output requires FuMa */
-        mDevice->mAmbiOrder = minu(mDevice->mAmbiOrder, 3);
+        mDevice->mAmbiOrder = std::min(mDevice->mAmbiOrder, 3u);
         mDevice->mAmbiLayout = DevAmbiLayout::FuMa;
         mDevice->mAmbiScale = DevAmbiScaling::FuMa;
         isbformat = true;
@@ -375,17 +379,16 @@ bool WaveBackendFactory::init()
 bool WaveBackendFactory::querySupport(BackendType type)
 { return type == BackendType::Playback; }
 
-std::string WaveBackendFactory::probe(BackendType type)
+auto WaveBackendFactory::enumerate(BackendType type) -> std::vector<std::string>
 {
     switch(type)
     {
     case BackendType::Playback:
-        /* Include null char. */
-        return std::string{GetDeviceName()} + '\0';
+        return std::vector{std::string{GetDeviceName()}};
     case BackendType::Capture:
         break;
     }
-    return std::string{};
+    return {};
 }
 
 BackendPtr WaveBackendFactory::createBackend(DeviceBase *device, BackendType type)

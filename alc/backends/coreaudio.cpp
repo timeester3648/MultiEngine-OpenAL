@@ -35,6 +35,7 @@
 #include <optional>
 
 #include "alnumeric.h"
+#include "alstring.h"
 #include "core/converter.h"
 #include "core/device.h"
 #include "core/logging.h"
@@ -376,7 +377,7 @@ void CoreAudioPlayback::open(std::string_view name)
         auto devmatch = std::find_if(PlaybackList.cbegin(), PlaybackList.cend(), find_name);
         if(devmatch == PlaybackList.cend())
             throw al::backend_exception{al::backend_error::NoDevice,
-                "Device name \"%.*s\" not found", static_cast<int>(name.length()), name.data()};
+                "Device name \"%.*s\" not found", al::sizei(name), name.data()};
 
         audioDevice = devmatch->mId;
     }
@@ -385,7 +386,7 @@ void CoreAudioPlayback::open(std::string_view name)
         name = ca_device;
     else if(name != ca_device)
         throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
-            static_cast<int>(name.length()), name.data()};
+            al::sizei(name), name.data()};
 #endif
 
     /* open the default output unit */
@@ -675,7 +676,7 @@ void CoreAudioCapture::open(std::string_view name)
         auto devmatch = std::find_if(CaptureList.cbegin(), CaptureList.cend(), find_name);
         if(devmatch == CaptureList.cend())
             throw al::backend_exception{al::backend_error::NoDevice,
-                "Device name \"%.*s\" not found", static_cast<int>(name.length()), name.data()};
+                "Device name \"%.*s\" not found", al::sizei(name), name.data()};
 
         audioDevice = devmatch->mId;
     }
@@ -684,7 +685,7 @@ void CoreAudioCapture::open(std::string_view name)
         name = ca_device;
     else if(name != ca_device)
         throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
-            static_cast<int>(name.length()), name.data()};
+            al::sizei(name), name.data()};
 #endif
 
     AudioComponentDescription desc{};
@@ -821,6 +822,7 @@ void CoreAudioCapture::open(std::string_view name)
     case DevFmtX61:
     case DevFmtX71:
     case DevFmtX714:
+    case DevFmtX7144:
     case DevFmtX3D71:
     case DevFmtAmbi3D:
         throw al::backend_exception{al::backend_error::DeviceError, "%s not supported",
@@ -855,8 +857,8 @@ void CoreAudioCapture::open(std::string_view name)
      * conversion ring buffer. Ensure at least 100ms for the total buffer.
      */
     double srateScale{outputFormat.mSampleRate / mDevice->Frequency};
-    auto FrameCount64 = maxu64(static_cast<uint64_t>(std::ceil(mDevice->BufferSize*srateScale)),
-        static_cast<UInt32>(outputFormat.mSampleRate)/10);
+    auto FrameCount64 = std::max(static_cast<uint64_t>(std::ceil(mDevice->BufferSize*srateScale)),
+        static_cast<UInt32>(outputFormat.mSampleRate)/10_u64);
     FrameCount64 += MaxResamplerPadding;
     if(FrameCount64 > std::numeric_limits<int32_t>::max())
         throw al::backend_exception{al::backend_error::DeviceError,
@@ -872,7 +874,7 @@ void CoreAudioCapture::open(std::string_view name)
 
     mCaptureData.resize(outputFrameCount * mFrameSize);
 
-    outputFrameCount = static_cast<UInt32>(maxu64(outputFrameCount, FrameCount64));
+    outputFrameCount = static_cast<UInt32>(std::max(uint64_t{outputFrameCount}, FrameCount64));
     mRing = RingBuffer::Create(outputFrameCount, mFrameSize, false);
 
     /* Set up sample converter if needed */
@@ -965,23 +967,23 @@ bool CoreAudioBackendFactory::init()
 bool CoreAudioBackendFactory::querySupport(BackendType type)
 { return type == BackendType::Playback || type == BackendType::Capture; }
 
-std::string CoreAudioBackendFactory::probe(BackendType type)
+auto CoreAudioBackendFactory::enumerate(BackendType type) -> std::vector<std::string>
 {
-    std::string outnames;
+    std::vector<std::string> outnames;
 #if CAN_ENUMERATE
     auto append_name = [&outnames](const DeviceEntry &entry) -> void
-    {
-        /* Includes null char. */
-        outnames.append(entry.mName.c_str(), entry.mName.length()+1);
-    };
+    { outnames.emplace_back(entry.mName); };
+
     switch(type)
     {
     case BackendType::Playback:
         EnumerateDevices(PlaybackList, false);
+        outnames.reserve(PlaybackList.size());
         std::for_each(PlaybackList.cbegin(), PlaybackList.cend(), append_name);
         break;
     case BackendType::Capture:
         EnumerateDevices(CaptureList, true);
+        outnames.reserve(CaptureList.size());
         std::for_each(CaptureList.cbegin(), CaptureList.cend(), append_name);
         break;
     }
@@ -992,8 +994,7 @@ std::string CoreAudioBackendFactory::probe(BackendType type)
     {
     case BackendType::Playback:
     case BackendType::Capture:
-        /* Includes null char. */
-        outnames.append(ca_device, sizeof(ca_device));
+        outnames.emplace_back(ca_device);
         break;
     }
 #endif

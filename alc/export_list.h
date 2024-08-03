@@ -202,11 +202,6 @@ inline const FuncExport alcFunctions[]{
     DECL(alGetBuffer3PtrSOFT),
     DECL(alGetBufferPtrvSOFT),
 
-    DECL(alAuxiliaryEffectSlotPlaySOFT),
-    DECL(alAuxiliaryEffectSlotPlayvSOFT),
-    DECL(alAuxiliaryEffectSlotStopSOFT),
-    DECL(alAuxiliaryEffectSlotStopvSOFT),
-
     DECL(alSourcePlayAtTimeSOFT),
     DECL(alSourcePlayAtTimevSOFT),
 
@@ -632,9 +627,11 @@ inline const EnumExport alcEnumerations[]{
     DECL(AL_FORMAT_51CHN_I32),
     DECL(AL_FORMAT_61CHN_I32),
     DECL(AL_FORMAT_71CHN_I32),
-    DECL(AL_FORMAT_UHJ2CHN_I32),
-    DECL(AL_FORMAT_UHJ3CHN_I32),
-    DECL(AL_FORMAT_UHJ4CHN_I32),
+    DECL(AL_FORMAT_BFORMAT2D_I32),
+    DECL(AL_FORMAT_BFORMAT3D_I32),
+    DECL(AL_FORMAT_UHJ2CHN_I32_SOFT),
+    DECL(AL_FORMAT_UHJ3CHN_I32_SOFT),
+    DECL(AL_FORMAT_UHJ4CHN_I32_SOFT),
 
     DECL(AL_FORMAT_REAR_FLOAT32),
     DECL(AL_FORMAT_QUAD_FLOAT32),
@@ -902,6 +899,9 @@ inline const EnumExport alcEnumerations[]{
     DECL(AL_FILTER_EXT),
     DECL(AL_EFFECT_EXT),
     DECL(AL_AUXILIARY_EFFECT_SLOT_EXT),
+
+    DECL(AL_PANNING_ENABLED_SOFT),
+    DECL(AL_PAN_SOFT),
 
     DECL(AL_STOP_SOURCES_ON_DISCONNECT_SOFT),
 };

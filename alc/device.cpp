@@ -3,6 +3,7 @@
 
 #include "device.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <numeric>
 
@@ -10,15 +11,14 @@
 #include "al/effect.h"
 #include "al/filter.h"
 #include "albit.h"
-#include "alconfig.h"
+#include "alnumeric.h"
+#include "atomic.h"
 #include "backends/base.h"
-#include "core/bformatdec.h"
-#include "core/bs2b.h"
-#include "core/front_stablizer.h"
+#include "core/devformat.h"
 #include "core/hrtf.h"
 #include "core/logging.h"
 #include "core/mastering.h"
-#include "core/uhjfilter.h"
+#include "flexarray.h"
 
 
 namespace {
@@ -88,6 +88,7 @@ auto ALCdevice::getOutputMode1() const noexcept -> OutputMode1
     case DevFmtX61: return OutputMode1::X61;
     case DevFmtX71: return OutputMode1::X71;
     case DevFmtX714:
+    case DevFmtX7144:
     case DevFmtX3D71:
     case DevFmtAmbi3D:
         break;

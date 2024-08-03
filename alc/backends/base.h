@@ -8,6 +8,7 @@
 #include <ratio>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "core/device.h"
 #include "core/except.h"
@@ -35,14 +36,20 @@ struct BackendBase {
 
     DeviceBase *const mDevice;
 
+    BackendBase() = delete;
+    BackendBase(const BackendBase&) = delete;
+    BackendBase(BackendBase&&) = delete;
     BackendBase(DeviceBase *device) noexcept : mDevice{device} { }
     virtual ~BackendBase() = default;
 
+    void operator=(const BackendBase&) = delete;
+    void operator=(BackendBase&&) = delete;
+
 protected:
     /** Sets the default channel order used by most non-WaveFormatEx-based APIs. */
-    void setDefaultChannelOrder();
+    void setDefaultChannelOrder() const;
     /** Sets the default channel order used by WaveFormatEx. */
-    void setDefaultWFXChannelOrder();
+    void setDefaultWFXChannelOrder() const;
 };
 using BackendPtr = std::unique_ptr<BackendBase>;
 
@@ -64,18 +71,24 @@ inline ClockLatency GetClockLatency(DeviceBase *device, BackendBase *backend)
 
 
 struct BackendFactory {
+    BackendFactory() = default;
+    BackendFactory(const BackendFactory&) = delete;
+    BackendFactory(BackendFactory&&) = delete;
     virtual ~BackendFactory() = default;
 
-    virtual bool init() = 0;
+    void operator=(const BackendFactory&) = delete;
+    void operator=(BackendFactory&&) = delete;
 
-    virtual bool querySupport(BackendType type) = 0;
+    virtual auto init() -> bool = 0;
 
-    virtual alc::EventSupport queryEventSupport(alc::EventType, BackendType)
+    virtual auto querySupport(BackendType type) -> bool = 0;
+
+    virtual auto queryEventSupport(alc::EventType, BackendType) -> alc::EventSupport
     { return alc::EventSupport::NoSupport; }
 
-    virtual std::string probe(BackendType type) = 0;
+    virtual auto enumerate(BackendType type) -> std::vector<std::string> = 0;
 
-    virtual BackendPtr createBackend(DeviceBase *device, BackendType type) = 0;
+    virtual auto createBackend(DeviceBase *device, BackendType type) -> BackendPtr = 0;
 };
 
 namespace al {

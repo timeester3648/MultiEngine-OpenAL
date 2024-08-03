@@ -33,13 +33,14 @@
 #include <vector>
 
 #include "alnumeric.h"
+#include "alstring.h"
 #include "althrd_setname.h"
 #include "core/device.h"
 #include "core/helpers.h"
 #include "core/logging.h"
 #include "ringbuffer.h"
 
-#include <sndio.h>
+#include <sndio.h> /* NOLINT(*-duplicate-include) Not the same header. */
 
 
 namespace {
@@ -87,7 +88,7 @@ int SndioPlayback::mixerProc()
     const size_t frameSize{frameStep * mDevice->bytesFromFmt()};
 
     SetRTPriority();
-    althrd_setname(MIXER_THREAD_NAME);
+    althrd_setname(GetMixerThreadName());
 
     while(!mKillNow.load(std::memory_order_acquire)
         && mDevice->Connected.load(std::memory_order_acquire))
@@ -119,7 +120,7 @@ void SndioPlayback::open(std::string_view name)
         name = GetDefaultName();
     else if(name != GetDefaultName())
         throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
-            static_cast<int>(name.length()), name.data()};
+            al::sizei(name), name.data()};
 
     sio_hdl *sndHandle{sio_open(nullptr, SIO_PLAY, 0)};
     if(!sndHandle)
@@ -308,7 +309,7 @@ SndioCapture::~SndioCapture()
 int SndioCapture::recordProc()
 {
     SetRTPriority();
-    althrd_setname(RECORD_THREAD_NAME);
+    althrd_setname(GetRecordThreadName());
 
     const uint frameSize{mDevice->frameSizeFromFmt()};
 
@@ -391,7 +392,7 @@ void SndioCapture::open(std::string_view name)
         name = GetDefaultName();
     else if(name != GetDefaultName())
         throw al::backend_exception{al::backend_error::NoDevice, "Device name \"%.*s\" not found",
-            static_cast<int>(name.length()), name.data()};
+            al::sizei(name), name.data()};
 
     mSndHandle = sio_open(nullptr, SIO_REC, true);
     if(mSndHandle == nullptr)
@@ -434,8 +435,8 @@ void SndioCapture::open(std::string_view name)
     par.rchan = mDevice->channelsFromFmt();
     par.rate = mDevice->Frequency;
 
-    par.appbufsz = maxu(mDevice->BufferSize, mDevice->Frequency/10);
-    par.round = minu(par.appbufsz/2, mDevice->Frequency/40);
+    par.appbufsz = std::max(mDevice->BufferSize, mDevice->Frequency/10u);
+    par.round = std::min(par.appbufsz/2u, mDevice->Frequency/40u);
 
     if(!sio_setpar(mSndHandle, &par) || !sio_getpar(mSndHandle, &par))
         throw al::backend_exception{al::backend_error::DeviceError,
@@ -519,16 +520,15 @@ bool SndIOBackendFactory::init()
 bool SndIOBackendFactory::querySupport(BackendType type)
 { return (type == BackendType::Playback || type == BackendType::Capture); }
 
-std::string SndIOBackendFactory::probe(BackendType type)
+auto SndIOBackendFactory::enumerate(BackendType type) -> std::vector<std::string>
 {
     switch(type)
     {
     case BackendType::Playback:
     case BackendType::Capture:
-        /* Include null char. */
-        return std::string{GetDefaultName()} + '\0';
+        return std::vector{std::string{GetDefaultName()}};
     }
-    return std::string{};
+    return {};
 }
 
 BackendPtr SndIOBackendFactory::createBackend(DeviceBase *device, BackendType type)

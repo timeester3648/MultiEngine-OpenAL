@@ -10,7 +10,6 @@
 #include <optional>
 #include <string>
 
-#include "almalloc.h"
 #include "alspan.h"
 #include "bufferline.h"
 #include "buffer_storage.h"
@@ -20,6 +19,7 @@
 #include "filters/splitter.h"
 #include "mixer/defs.h"
 #include "mixer/hrtfdefs.h"
+#include "opthelpers.h"
 #include "resampler_limits.h"
 #include "uhjfilter.h"
 #include "vector.h"
@@ -65,26 +65,29 @@ struct DirectParams {
 
     NfcFilter NFCtrlFilter;
 
-    struct {
+    struct HrtfParams {
         HrtfFilter Old{};
         HrtfFilter Target{};
         alignas(16) std::array<float,HrtfHistoryLength> History{};
-    } Hrtf;
+    };
+    HrtfParams Hrtf;
 
-    struct {
+    struct GainParams {
         std::array<float,MaxOutputChannels> Current{};
         std::array<float,MaxOutputChannels> Target{};
-    } Gains;
+    };
+    GainParams Gains;
 };
 
 struct SendParams {
     BiquadFilter LowPass;
     BiquadFilter HighPass;
 
-    struct {
+    struct GainParams {
         std::array<float,MaxAmbiChannels> Current{};
         std::array<float,MaxAmbiChannels> Target{};
-    } Gains;
+    };
+    GainParams Gains;
 };
 
 
@@ -99,7 +102,7 @@ struct VoiceBufferItem {
     uint mLoopStart{0u};
     uint mLoopEnd{0u};
 
-    std::byte *mSamples{nullptr};
+    al::span<std::byte> mSamples{};
 };
 
 
@@ -138,15 +141,18 @@ struct VoiceProps {
 
     float Radius;
     float EnhWidth;
+    float Panning;
 
     /** Direct filter and auxiliary send info. */
-    struct {
+    struct DirectData {
         float Gain;
         float GainHF;
         float HFReference;
         float GainLF;
         float LFReference;
-    } Direct;
+    };
+    DirectData Direct;
+
     struct SendData {
         EffectSlot *Slot;
         float Gain;
@@ -174,7 +180,7 @@ enum : uint {
     VoiceFlagCount
 };
 
-struct Voice {
+struct SIMDALIGN Voice {
     enum State {
         Stopped,
         Playing,
@@ -268,9 +274,9 @@ struct Voice {
 
     void prepare(DeviceBase *device);
 
-    static void InitMixer(std::optional<std::string> resampler);
+    static void InitMixer(std::optional<std::string> resopt);
 };
 
-extern Resampler ResamplerDefault;
+inline Resampler ResamplerDefault{Resampler::Gaussian};
 
 #endif /* CORE_VOICE_H */

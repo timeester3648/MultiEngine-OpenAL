@@ -5,11 +5,10 @@
 #include <cstddef>
 #include <variant>
 
-#include "almalloc.h"
 #include "alspan.h"
-#include "atomic.h"
 #include "core/bufferline.h"
 #include "intrusive_ptr.h"
+#include "opthelpers.h"
 
 struct BufferStorage;
 struct ContextBase;
@@ -102,15 +101,6 @@ struct ChorusProps {
     float Delay;
 };
 
-struct FlangerProps {
-    ChorusWaveform Waveform;
-    int Phase;
-    float Rate;
-    float Depth;
-    float Feedback;
-    float Delay;
-};
-
 struct CompressorProps {
     bool OnOff;
 };
@@ -172,11 +162,9 @@ struct VmorpherProps {
     VMorpherWaveform Waveform;
 };
 
-struct DedicatedDialogProps {
-    float Gain;
-};
-
-struct DedicatedLfeProps {
+struct DedicatedProps {
+    enum TargetType : bool { Dialog, Lfe };
+    TargetType Target;
     float Gain;
 };
 
@@ -189,7 +177,6 @@ using EffectProps = std::variant<std::monostate,
     ReverbProps,
     AutowahProps,
     ChorusProps,
-    FlangerProps,
     CompressorProps,
     DistortionProps,
     EchoProps,
@@ -198,8 +185,7 @@ using EffectProps = std::variant<std::monostate,
     ModulatorProps,
     PshifterProps,
     VmorpherProps,
-    DedicatedDialogProps,
-    DedicatedLfeProps,
+    DedicatedProps,
     ConvolutionProps>;
 
 
@@ -208,7 +194,7 @@ struct EffectTarget {
     RealMixParams *RealOut;
 };
 
-struct EffectState : public al::intrusive_ref<EffectState> {
+struct SIMDALIGN EffectState : public al::intrusive_ref<EffectState> {
     al::span<FloatBufferLine> mOutTarget;
 
 
@@ -223,7 +209,13 @@ struct EffectState : public al::intrusive_ref<EffectState> {
 
 
 struct EffectStateFactory {
+    EffectStateFactory() = default;
+    EffectStateFactory(const EffectStateFactory&) = delete;
+    EffectStateFactory(EffectStateFactory&&) = delete;
     virtual ~EffectStateFactory() = default;
+
+    void operator=(const EffectStateFactory&) = delete;
+    void operator=(EffectStateFactory&&) = delete;
 
     virtual al::intrusive_ptr<EffectState> create() = 0;
 };
