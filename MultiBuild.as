@@ -13,8 +13,6 @@ void main(MultiBuild::Workspace& workspace) {
 	project.add_required_project_include({
 		"./include"
 	});
-
-	properties.dependencies("MultiEngineMemory");
 	
 	properties.include_directories({
 		"./",
