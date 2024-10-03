@@ -9,12 +9,12 @@ void main(MultiBuild::Workspace& workspace) {
 	// TODO: remove when compilation errors fixed
 	properties.cpp_dialect(MultiBuild::LangDialectCpp::e20);
 
-	properties.project_includes("Intrinsics");
-
 	project.include_own_required_includes(true);
 	project.add_required_project_include({
 		"./include"
 	});
+
+	properties.dependencies("MultiEngineMemory");
 	
 	properties.include_directories({
 		"./",
