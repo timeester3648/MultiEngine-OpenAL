@@ -47,6 +47,8 @@ void main(MultiBuild::Workspace& workspace) {
 
 	{
 		MultiBuild::ScopedFilter _(project, "config.platform:Windows");
+		properties.library_links("Avrt");
+
 		properties.defines({
 			"AL_ALEXT_PROTOTYPES", 
 			"RESTRICT=__restrict", 
