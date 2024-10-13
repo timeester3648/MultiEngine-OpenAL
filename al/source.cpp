@@ -1409,11 +1409,10 @@ struct HexPrinter {
  * Returns a pair of lambdas to check the following setter.
  *
  * The first lambda checks the size of the span is valid for the required size,
- * setting the proper context error and throwing a check_size_exception if it
- * fails.
+ * throwing a context error if it fails.
  *
- * The second lambda tests the validity of the value check, setting the proper
- * context error and throwing a check_value_exception if it failed.
+ * The second lambda tests the validity of the value check, throwing a context
+ * error if it failed.
  */
 template<typename T, size_t N>
 auto GetCheckers(const SourceProp prop, const al::span<T,N> values)
@@ -1467,7 +1466,10 @@ NOINLINE void SetProperty(ALsource *const Source, ALCcontext *const Context, con
 
     case AL_PITCH:
         CheckSize(1);
-        CheckValue(values[0] >= T{0});
+        if constexpr(std::is_floating_point_v<T>)
+            CheckValue(values[0] >= T{0} && std::isfinite(static_cast<float>(values[0])));
+        else
+            CheckValue(values[0] >= T{0});
 
         Source->Pitch = static_cast<float>(values[0]);
         return UpdateSourceProps(Source, Context);
@@ -1488,42 +1490,60 @@ NOINLINE void SetProperty(ALsource *const Source, ALCcontext *const Context, con
 
     case AL_GAIN:
         CheckSize(1);
-        CheckValue(values[0] >= T{0});
+        if constexpr(std::is_floating_point_v<T>)
+            CheckValue(values[0] >= T{0} && std::isfinite(static_cast<float>(values[0])));
+        else
+            CheckValue(values[0] >= T{0});
 
         Source->Gain = static_cast<float>(values[0]);
         return UpdateSourceProps(Source, Context);
 
     case AL_MAX_DISTANCE:
         CheckSize(1);
-        CheckValue(values[0] >= T{0});
+        if constexpr(std::is_floating_point_v<T>)
+            CheckValue(values[0] >= T{0} && std::isfinite(static_cast<float>(values[0])));
+        else
+            CheckValue(values[0] >= T{0});
 
         Source->MaxDistance = static_cast<float>(values[0]);
         return CommitAndUpdateSourceProps(Source, Context);
 
     case AL_ROLLOFF_FACTOR:
         CheckSize(1);
-        CheckValue(values[0] >= T{0});
+        if constexpr(std::is_floating_point_v<T>)
+            CheckValue(values[0] >= T{0} && std::isfinite(static_cast<float>(values[0])));
+        else
+            CheckValue(values[0] >= T{0});
 
         Source->RolloffFactor = static_cast<float>(values[0]);
         return CommitAndUpdateSourceProps(Source, Context);
 
     case AL_REFERENCE_DISTANCE:
         CheckSize(1);
-        CheckValue(values[0] >= T{0});
+        if constexpr(std::is_floating_point_v<T>)
+            CheckValue(values[0] >= T{0} && std::isfinite(static_cast<float>(values[0])));
+        else
+            CheckValue(values[0] >= T{0});
 
         Source->RefDistance = static_cast<float>(values[0]);
         return CommitAndUpdateSourceProps(Source, Context);
 
     case AL_MIN_GAIN:
         CheckSize(1);
-        CheckValue(values[0] >= T{0});
+        if constexpr(std::is_floating_point_v<T>)
+            CheckValue(values[0] >= T{0} && std::isfinite(static_cast<float>(values[0])));
+        else
+            CheckValue(values[0] >= T{0});
 
         Source->MinGain = static_cast<float>(values[0]);
         return UpdateSourceProps(Source, Context);
 
     case AL_MAX_GAIN:
         CheckSize(1);
-        CheckValue(values[0] >= T{0});
+        if constexpr(std::is_floating_point_v<T>)
+            CheckValue(values[0] >= T{0} && std::isfinite(static_cast<float>(values[0])));
+        else
+            CheckValue(values[0] >= T{0});
 
         Source->MaxGain = static_cast<float>(values[0]);
         return UpdateSourceProps(Source, Context);
@@ -2328,7 +2348,7 @@ NOINLINE void GetProperty(ALsource *const Source, ALCcontext *const Context, con
         if constexpr(std::is_integral_v<T>)
         {
             CheckSize(1);
-            ALbufferQueueItem *BufferList{};
+            const ALbufferQueueItem *BufferList{};
             /* HACK: This query should technically only return the buffer set
              * on a static source. However, some apps had used it to detect
              * when a streaming source changed buffers, so report the current
@@ -2342,7 +2362,10 @@ NOINLINE void GetProperty(ALsource *const Source, ALCcontext *const Context, con
             else if(Voice *voice{GetSourceVoice(Source, Context)})
             {
                 VoiceBufferItem *Current{voice->mCurrentBuffer.load(std::memory_order_relaxed)};
-                BufferList = static_cast<ALbufferQueueItem*>(Current);
+                const auto iter = std::find_if(Source->mQueue.cbegin(), Source->mQueue.cend(),
+                    [Current](const ALbufferQueueItem &item) noexcept -> bool
+                    { return &item == Current; });
+                BufferList = (iter != Source->mQueue.cend()) ? al::to_address(iter) : nullptr;
             }
             ALbuffer *buffer{BufferList ? BufferList->mBuffer : nullptr};
             values[0] = buffer ? static_cast<T>(buffer->id) : T{0};
@@ -4001,32 +4024,30 @@ void ALsource::eax4_translate(const Eax4Props& src, Eax5Props& dst) noexcept
 
     // Active FX slots.
     //
-    for(size_t i{0};i < EAX50_MAX_ACTIVE_FXSLOTS;++i)
+    auto translate_slotid = [](const GUID &src_id) -> GUID
     {
-        auto& dst_id = dst.active_fx_slots.guidActiveFXSlots[i];
+        if(src_id == EAX_NULL_GUID)
+            return EAX_NULL_GUID;
+        if(src_id == EAX_PrimaryFXSlotID)
+            return EAX_PrimaryFXSlotID;
+        if(src_id == EAXPROPERTYID_EAX40_FXSlot0)
+            return EAXPROPERTYID_EAX50_FXSlot0;
+        if(src_id == EAXPROPERTYID_EAX40_FXSlot1)
+            return EAXPROPERTYID_EAX50_FXSlot1;
+        if(src_id == EAXPROPERTYID_EAX40_FXSlot2)
+            return EAXPROPERTYID_EAX50_FXSlot2;
+        if(src_id == EAXPROPERTYID_EAX40_FXSlot3)
+            return EAXPROPERTYID_EAX50_FXSlot3;
 
-        if(i < EAX40_MAX_ACTIVE_FXSLOTS)
-        {
-            const auto& src_id = src.active_fx_slots.guidActiveFXSlots[i];
-
-            if(src_id == EAX_NULL_GUID)
-                dst_id = EAX_NULL_GUID;
-            else if(src_id == EAX_PrimaryFXSlotID)
-                dst_id = EAX_PrimaryFXSlotID;
-            else if(src_id == EAXPROPERTYID_EAX40_FXSlot0)
-                dst_id = EAXPROPERTYID_EAX50_FXSlot0;
-            else if(src_id == EAXPROPERTYID_EAX40_FXSlot1)
-                dst_id = EAXPROPERTYID_EAX50_FXSlot1;
-            else if(src_id == EAXPROPERTYID_EAX40_FXSlot2)
-                dst_id = EAXPROPERTYID_EAX50_FXSlot2;
-            else if(src_id == EAXPROPERTYID_EAX40_FXSlot3)
-                dst_id = EAXPROPERTYID_EAX50_FXSlot3;
-            else
-                assert(false && "Unknown active FX slot ID.");
-        }
-        else
-            dst_id = EAX_NULL_GUID;
-    }
+        UNLIKELY
+        ERR("Unexpected active FX slot ID\n");
+        return EAX_NULL_GUID;
+    };
+    const auto src_slots = al::span{src.active_fx_slots.guidActiveFXSlots};
+    const auto dst_slots = al::span{dst.active_fx_slots.guidActiveFXSlots};
+    auto dstiter = std::transform(src_slots.cbegin(), src_slots.cend(), dst_slots.begin(),
+        translate_slotid);
+    std::fill(dstiter, dst_slots.end(), EAX_NULL_GUID);
 
     // Speaker levels.
     //
@@ -4047,60 +4068,55 @@ float ALsource::eax_calculate_dst_occlusion_mb(
 
 EaxAlLowPassParam ALsource::eax_create_direct_filter_param() const noexcept
 {
-    auto gain_mb =
-        static_cast<float>(mEax.source.lDirect) +
-        (static_cast<float>(mEax.source.lObstruction) * mEax.source.flObstructionLFRatio) +
-        eax_calculate_dst_occlusion_mb(
-            mEax.source.lOcclusion,
-            mEax.source.flOcclusionDirectRatio,
-            mEax.source.flOcclusionLFRatio);
+    const auto &source = mEax.source;
 
-    const auto has_source_occlusion = (mEax.source.lOcclusion != 0);
-
-    auto gain_hf_mb =
-        static_cast<float>(mEax.source.lDirectHF) +
-        static_cast<float>(mEax.source.lObstruction);
+    auto gain_mb = static_cast<float>(source.lObstruction) * source.flObstructionLFRatio;
+    auto gainhf_mb = static_cast<float>(source.lObstruction);
 
     for(size_t i{0};i < EAX_MAX_FXSLOTS;++i)
     {
         if(!mEaxActiveFxSlots[i])
             continue;
 
-        if(has_source_occlusion)
+        if(source.lOcclusion != 0)
         {
             const auto& fx_slot = mEaxAlContext->eaxGetFxSlot(i);
             const auto& fx_slot_eax = fx_slot.eax_get_eax_fx_slot();
-            const auto is_environmental_fx = ((fx_slot_eax.ulFlags & EAXFXSLOTFLAGS_ENVIRONMENT) != 0);
+            const auto is_environmental_fx = ((fx_slot_eax.ulFlags&EAXFXSLOTFLAGS_ENVIRONMENT) != 0);
             const auto is_primary = (mEaxPrimaryFxSlotId.value_or(-1) == fx_slot.eax_get_index());
-            const auto is_listener_environment = (is_environmental_fx && is_primary);
 
-            if(is_listener_environment)
+            if(is_environmental_fx && is_primary)
             {
-                gain_mb += eax_calculate_dst_occlusion_mb(
-                    mEax.source.lOcclusion,
-                    mEax.source.flOcclusionDirectRatio,
-                    mEax.source.flOcclusionLFRatio);
+                gain_mb += eax_calculate_dst_occlusion_mb(source.lOcclusion,
+                    source.flOcclusionDirectRatio, source.flOcclusionLFRatio);
 
-                gain_hf_mb += static_cast<float>(mEax.source.lOcclusion) * mEax.source.flOcclusionDirectRatio;
+                gainhf_mb += static_cast<float>(source.lOcclusion) * source.flOcclusionDirectRatio;
             }
         }
 
         const auto& send = mEax.sends[i];
-
         if(send.lOcclusion != 0)
         {
-            gain_mb += eax_calculate_dst_occlusion_mb(
-                send.lOcclusion,
-                send.flOcclusionDirectRatio,
+            gain_mb += eax_calculate_dst_occlusion_mb(send.lOcclusion, send.flOcclusionDirectRatio,
                 send.flOcclusionLFRatio);
 
-            gain_hf_mb += static_cast<float>(send.lOcclusion) * send.flOcclusionDirectRatio;
+            gainhf_mb += static_cast<float>(send.lOcclusion) * send.flOcclusionDirectRatio;
         }
     }
 
-    return EaxAlLowPassParam{
-        level_mb_to_gain(gain_mb),
-        std::min(level_mb_to_gain(gain_hf_mb), 1.0f)};
+    /* gainhf_mb is the absolute mBFS of the filter's high-frequency volume,
+     * and gain_mb is the absolute mBFS of the filter's low-frequency volume.
+     * Adjust the HF volume to be relative to the LF volume, to make the
+     * appropriate main and relative HF filter volumes.
+     *
+     * Also add the Direct and DirectHF properties to the filter, which are
+     * already the main and relative HF volumes.
+     */
+    gainhf_mb -= gain_mb - static_cast<float>(source.lDirectHF);
+    gain_mb += static_cast<float>(source.lDirect);
+
+    return EaxAlLowPassParam{level_mb_to_gain(gain_mb),
+        std::min(level_mb_to_gain(gainhf_mb), 1.0f)};
 }
 
 EaxAlLowPassParam ALsource::eax_create_room_filter_param(
@@ -4108,42 +4124,40 @@ EaxAlLowPassParam ALsource::eax_create_room_filter_param(
     const EAXSOURCEALLSENDPROPERTIES& send) const noexcept
 {
     const auto& fx_slot_eax = fx_slot.eax_get_eax_fx_slot();
-    const auto is_environmental_fx = ((fx_slot_eax.ulFlags & EAXFXSLOTFLAGS_ENVIRONMENT) != 0);
-    const auto is_primary = (mEaxPrimaryFxSlotId.value_or(-1) == fx_slot.eax_get_index());
-    const auto is_listener_environment = (is_environmental_fx && is_primary);
+    const auto is_environmental_fx = bool{(fx_slot_eax.ulFlags & EAXFXSLOTFLAGS_ENVIRONMENT) != 0};
+    const auto is_primary = bool{mEaxPrimaryFxSlotId.value_or(-1) == fx_slot.eax_get_index()};
 
-    const auto gain_mb =
-        (static_cast<float>(fx_slot_eax.lOcclusion) * fx_slot_eax.flOcclusionLFRatio) +
-        static_cast<float>((is_environmental_fx ? mEax.source.lRoom : 0) + send.lSend) +
-        (is_listener_environment ?
-            eax_calculate_dst_occlusion_mb(
-                mEax.source.lOcclusion,
-                mEax.source.flOcclusionRoomRatio,
-                mEax.source.flOcclusionLFRatio) :
-            0.0f) +
-        eax_calculate_dst_occlusion_mb(
-            send.lOcclusion,
-            send.flOcclusionRoomRatio,
-            send.flOcclusionLFRatio) +
-        (is_listener_environment ?
-            (static_cast<float>(mEax.source.lExclusion) * mEax.source.flExclusionLFRatio) :
-            0.0f) +
-        (static_cast<float>(send.lExclusion) * send.flExclusionLFRatio);
+    auto gain_mb = (static_cast<float>(fx_slot_eax.lOcclusion) * fx_slot_eax.flOcclusionLFRatio)
+        + eax_calculate_dst_occlusion_mb(send.lOcclusion, send.flOcclusionRoomRatio,
+            send.flOcclusionLFRatio)
+        + (static_cast<float>(send.lExclusion) * send.flExclusionLFRatio);
 
-    const auto gain_hf_mb =
-        static_cast<float>(fx_slot_eax.lOcclusion) +
-        static_cast<float>((is_environmental_fx ? mEax.source.lRoomHF : 0) + send.lSendHF) +
-        (is_listener_environment ?
-            ((static_cast<float>(mEax.source.lOcclusion) * mEax.source.flOcclusionRoomRatio)) :
-            0.0f) +
-        (static_cast<float>(send.lOcclusion) * send.flOcclusionRoomRatio) +
-        (is_listener_environment ?
-            static_cast<float>(mEax.source.lExclusion + send.lExclusion) :
-            0.0f);
+    auto gainhf_mb = static_cast<float>(fx_slot_eax.lOcclusion)
+        + (static_cast<float>(send.lOcclusion) * send.flOcclusionRoomRatio);
 
-    return EaxAlLowPassParam{
-        level_mb_to_gain(gain_mb),
-        std::min(level_mb_to_gain(gain_hf_mb), 1.0f)};
+    if(is_environmental_fx && is_primary)
+    {
+        const auto &source = mEax.source;
+
+        gain_mb += eax_calculate_dst_occlusion_mb(source.lOcclusion, source.flOcclusionRoomRatio,
+            source.flOcclusionLFRatio);
+        gain_mb += static_cast<float>(source.lExclusion) * source.flExclusionLFRatio;
+
+        gainhf_mb += static_cast<float>(source.lOcclusion) * source.flOcclusionRoomRatio;
+        gainhf_mb += static_cast<float>(source.lExclusion + send.lExclusion);
+    }
+
+    gainhf_mb -= gain_mb - static_cast<float>(send.lSendHF);
+    gain_mb += static_cast<float>(send.lSend);
+    if(is_environmental_fx)
+    {
+        const auto &source = mEax.source;
+        gain_mb += static_cast<float>(source.lRoom);
+        gainhf_mb += static_cast<float>(source.lRoomHF);
+    }
+
+    return EaxAlLowPassParam{level_mb_to_gain(gain_mb),
+        std::min(level_mb_to_gain(gainhf_mb), 1.0f)};
 }
 
 void ALsource::eax_update_direct_filter()

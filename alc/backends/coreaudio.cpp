@@ -435,7 +435,7 @@ void CoreAudioPlayback::open(std::string_view name)
 
 #if CAN_ENUMERATE
     if(!name.empty())
-        mDevice->DeviceName = name;
+        mDeviceName = name;
     else
     {
         UInt32 propSize{sizeof(audioDevice)};
@@ -444,8 +444,8 @@ void CoreAudioPlayback::open(std::string_view name)
             kAudioUnitScope_Global, OutputElement, &audioDevice, &propSize);
 
         std::string devname{GetDeviceName(audioDevice)};
-        if(!devname.empty()) mDevice->DeviceName = std::move(devname);
-        else mDevice->DeviceName = "Unknown Device Name";
+        if(!devname.empty()) mDeviceName = std::move(devname);
+        else mDeviceName = "Unknown Device Name";
     }
 
     if(audioDevice != kAudioDeviceUnknown)
@@ -463,7 +463,7 @@ void CoreAudioPlayback::open(std::string_view name)
     }
 
 #else
-    mDevice->DeviceName = name;
+    mDeviceName = name;
 #endif
 }
 
@@ -885,7 +885,7 @@ void CoreAudioCapture::open(std::string_view name)
 
 #if CAN_ENUMERATE
     if(!name.empty())
-        mDevice->DeviceName = name;
+        mDeviceName = name;
     else
     {
         UInt32 propSize{sizeof(audioDevice)};
@@ -894,11 +894,11 @@ void CoreAudioCapture::open(std::string_view name)
             kAudioUnitScope_Global, InputElement, &audioDevice, &propSize);
 
         std::string devname{GetDeviceName(audioDevice)};
-        if(!devname.empty()) mDevice->DeviceName = std::move(devname);
-        else mDevice->DeviceName = "Unknown Device Name";
+        if(!devname.empty()) mDeviceName = std::move(devname);
+        else mDeviceName = "Unknown Device Name";
     }
 #else
-    mDevice->DeviceName = name;
+    mDeviceName = name;
 #endif
 }
 
@@ -927,16 +927,16 @@ void CoreAudioCapture::captureSamples(std::byte *buffer, uint samples)
     }
 
     auto rec_vec = mRing->getReadVector();
-    const void *src0{rec_vec.first.buf};
-    auto src0len = static_cast<uint>(rec_vec.first.len);
+    const void *src0{rec_vec[0].buf};
+    auto src0len = static_cast<uint>(rec_vec[0].len);
     uint got{mConverter->convert(&src0, &src0len, buffer, samples)};
-    size_t total_read{rec_vec.first.len - src0len};
-    if(got < samples && !src0len && rec_vec.second.len > 0)
+    size_t total_read{rec_vec[0].len - src0len};
+    if(got < samples && !src0len && rec_vec[1].len > 0)
     {
-        const void *src1{rec_vec.second.buf};
-        auto src1len = static_cast<uint>(rec_vec.second.len);
+        const void *src1{rec_vec[1].buf};
+        auto src1len = static_cast<uint>(rec_vec[1].len);
         got += mConverter->convert(&src1, &src1len, buffer + got*mFrameSize, samples-got);
-        total_read += rec_vec.second.len - src1len;
+        total_read += rec_vec[1].len - src1len;
     }
 
     mRing->readAdvance(total_read);

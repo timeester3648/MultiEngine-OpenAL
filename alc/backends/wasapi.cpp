@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <memory.h>
 
+#include <avrt.h>
 #include <wtypes.h>
 #include <mmdeviceapi.h>
 #include <audiosessiontypes.h>
@@ -112,8 +113,6 @@ using std::chrono::nanoseconds;
 using std::chrono::milliseconds;
 using std::chrono::seconds;
 
-[[nodiscard]] constexpr auto GetDevicePrefix() noexcept { return "OpenAL Soft on "sv; }
-
 using ReferenceTime = std::chrono::duration<REFERENCE_TIME,std::ratio<1,10'000'000>>;
 
 
@@ -158,9 +157,6 @@ constexpr AudioObjectType ChannelMask_Quad{AudioObjectType_FrontLeft | AudioObje
 constexpr AudioObjectType ChannelMask_X51{AudioObjectType_FrontLeft | AudioObjectType_FrontRight
     | AudioObjectType_FrontCenter | AudioObjectType_LowFrequency | AudioObjectType_SideLeft
     | AudioObjectType_SideRight};
-constexpr AudioObjectType ChannelMask_X51Rear{AudioObjectType_FrontLeft
-    | AudioObjectType_FrontRight | AudioObjectType_FrontCenter | AudioObjectType_LowFrequency
-    | AudioObjectType_BackLeft | AudioObjectType_BackRight};
 constexpr AudioObjectType ChannelMask_X61{AudioObjectType_FrontLeft | AudioObjectType_FrontRight
     | AudioObjectType_FrontCenter | AudioObjectType_LowFrequency | AudioObjectType_SideLeft
     | AudioObjectType_SideRight | AudioObjectType_BackCenter};
@@ -319,6 +315,13 @@ struct DeviceListLock : public std::unique_lock<DeviceList> {
 DeviceList gDeviceList;
 
 
+#ifdef AVRTAPI
+struct AvrtHandleCloser {
+    void operator()(HANDLE handle) { AvRevertMmThreadCharacteristics(handle); }
+};
+using AvrtHandlePtr = std::unique_ptr<std::remove_pointer_t<HANDLE>,AvrtHandleCloser>;
+#endif
+
 #if defined(ALSOFT_UWP)
 enum EDataFlow {
     eRender              = 0,
@@ -336,8 +339,8 @@ using DeviceHandle = ComPtr<IMMDevice>;
 #endif
 
 
-using NameGUIDPair = std::pair<std::string,std::string>;
-NameGUIDPair GetDeviceNameAndGuid(const DeviceHandle &device)
+struct NameGUIDPair { std::string mName; std::string mGuid; };
+auto GetDeviceNameAndGuid(const DeviceHandle &device) -> NameGUIDPair
 {
     constexpr auto UnknownName = "Unknown Device Name"sv;
     constexpr auto UnknownGuid = "Unknown Device GUID"sv;
@@ -792,14 +795,14 @@ private:
 
         auto name_guid = GetDeviceNameAndGuid(device);
         int count{1};
-        std::string newname{name_guid.first};
+        std::string newname{name_guid.mName};
         while(checkName(list, newname))
         {
-            newname = name_guid.first;
+            newname = name_guid.mName;
             newname += " #";
             newname += std::to_string(++count);
         }
-        list.emplace_back(std::move(newname), std::move(name_guid.second), devid);
+        list.emplace_back(std::move(newname), std::move(name_guid.mGuid), devid);
         const DevMap &newentry = list.back();
 
         TRACE("Got device \"%s\", \"%s\", \"%ls\"\n", newentry.name.c_str(),
@@ -968,6 +971,7 @@ struct WasapiProxy {
     static inline std::deque<Msg> mMsgQueue;
     static inline std::mutex mMsgQueueLock;
     static inline std::condition_variable mMsgQueueCond;
+    static inline DWORD sAvIndex{};
 
     static inline std::optional<DeviceHelper> sDeviceHelper;
 
@@ -1120,10 +1124,10 @@ struct WasapiPlayback final : public BackendBase, WasapiProxy {
         ComPtr<ISpatialAudioObjectRenderStream> mRender{nullptr};
         AudioObjectType mStaticMask{};
     };
-    std::variant<std::monostate,PlainDevice,SpatialDevice> mAudio;
+    std::variant<PlainDevice,SpatialDevice> mAudio{std::in_place_index_t<0>{}};
     HANDLE mNotifyEvent{nullptr};
 
-    UINT32 mOrigBufferSize{}, mOrigUpdateSize{};
+    UINT32 mOutBufferSize{}, mOutUpdateSize{};
     std::vector<char> mResampleBuffer{};
     uint mBufferFilled{0};
     SampleConverterPtr mResampler;
@@ -1165,9 +1169,18 @@ FORCE_ALIGN int WasapiPlayback::mixerProc()
     althrd_setname(GetMixerThreadName());
 
     const uint frame_size{mFormat.Format.nChannels * mFormat.Format.wBitsPerSample / 8u};
-    const uint update_size{mOrigUpdateSize};
-    const UINT32 buffer_len{mOrigBufferSize};
+    const uint update_size{mOutUpdateSize};
+    const UINT32 buffer_len{mOutBufferSize};
     const void *resbufferptr{};
+
+#ifdef AVRTAPI
+    /* TODO: "Audio" or "Pro Audio"? The suggestion is to use "Pro Audio" for
+     * device periods less than 10ms, and "Audio" for greater than or equal to
+     * 10ms.
+     */
+    auto taskname = (update_size < mFormat.Format.nSamplesPerSec/100) ? L"Pro Audio" : L"Audio";
+    auto avhandle = AvrtHandlePtr{AvSetMmThreadCharacteristicsW(taskname, &sAvIndex)};
+#endif
 
     mBufferFilled = 0;
     while(!mKillNow.load(std::memory_order_relaxed))
@@ -1253,15 +1266,20 @@ FORCE_ALIGN int WasapiPlayback::mixerSpatialProc()
     althrd_setname(GetMixerThreadName());
 
     std::vector<ComPtr<ISpatialAudioObject>> channels;
-    std::vector<float*> buffers;
-    std::vector<float*> resbuffers;
+    std::vector<void*> buffers;
+    std::vector<void*> resbuffers;
     std::vector<const void*> tmpbuffers;
+
+#ifdef AVRTAPI
+    auto taskname = (mOutUpdateSize < mFormat.Format.nSamplesPerSec/100) ? L"Pro Audio" : L"Audio";
+    auto avhandle = AvrtHandlePtr{AvSetMmThreadCharacteristicsW(taskname, &sAvIndex)};
+#endif
 
     /* TODO: Set mPadding appropriately. There doesn't seem to be a way to
      * update it dynamically based on the stream, so a fixed size may be the
      * best we can do.
      */
-    mPadding.store(mOrigBufferSize-mOrigUpdateSize, std::memory_order_release);
+    mPadding.store(mOutBufferSize-mOutUpdateSize, std::memory_order_release);
 
     mBufferFilled = 0;
     while(!mKillNow.load(std::memory_order_relaxed))
@@ -1304,7 +1322,7 @@ FORCE_ALIGN int WasapiPlayback::mixerSpatialProc()
                     auto bufptr = mResampleBuffer.begin();
                     for(size_t i{0};i < tmpbuffers.size();++i)
                     {
-                        resbuffers[i] = reinterpret_cast<float*>(al::to_address(bufptr));
+                        resbuffers[i] = al::to_address(bufptr);
                         bufptr += ptrdiff_t(mDevice->UpdateSize*sizeof(float));
                     }
                 }
@@ -1314,12 +1332,12 @@ FORCE_ALIGN int WasapiPlayback::mixerSpatialProc()
              * update, unfortunately.
              */
             std::transform(channels.cbegin(), channels.cend(), buffers.begin(),
-                [](const ComPtr<ISpatialAudioObject> &obj) -> float*
+                [](const ComPtr<ISpatialAudioObject> &obj) -> void*
                 {
-                    BYTE *buffer{};
-                    UINT32 size{};
+                    auto buffer = LPBYTE{};
+                    auto size = UINT32{};
                     obj->GetBuffer(&buffer, &size);
-                    return reinterpret_cast<float*>(buffer);
+                    return buffer;
                 });
 
             if(!mResampler)
@@ -1337,9 +1355,9 @@ FORCE_ALIGN int WasapiPlayback::mixerSpatialProc()
                     }
 
                     const uint got{mResampler->convertPlanar(tmpbuffers.data(), &mBufferFilled,
-                        reinterpret_cast<void*const*>(buffers.data()), framesToDo-pos)};
+                        buffers.data(), framesToDo-pos)};
                     for(auto &buf : buffers)
-                        buf += got; /* NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) */
+                        buf = static_cast<float*>(buf) + got; /* NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) */
                     pos += got;
                 }
             }
@@ -1369,9 +1387,6 @@ void WasapiPlayback::open(std::string_view name)
         throw al::backend_exception{al::backend_error::DeviceError,
             "Failed to create notify events"};
     }
-
-    if(const auto prefix = GetDevicePrefix(); al::starts_with(name, prefix))
-        name = name.substr(prefix.size());
 
     mOpenStatus = pushMessage(MsgType::OpenDevice, name).get();
     if(FAILED(mOpenStatus))
@@ -1413,16 +1428,16 @@ HRESULT WasapiPlayback::openProxy(std::string_view name)
         return hr;
     }
     if(!devname.empty())
-        mDevice->DeviceName = std::string{GetDevicePrefix()}+std::move(devname);
+        mDeviceName = std::move(devname);
     else
-        mDevice->DeviceName = std::string{GetDevicePrefix()}+GetDeviceNameAndGuid(mMMDev).first;
+        mDeviceName = GetDeviceNameAndGuid(mMMDev).mName;
 
     return S_OK;
 }
 
 void WasapiPlayback::closeProxy()
 {
-    mAudio.emplace<std::monostate>();
+    mAudio.emplace<PlainDevice>();
     mMMDev = nullptr;
 }
 
@@ -1549,7 +1564,7 @@ void WasapiPlayback::prepareFormat(WAVEFORMATEXTENSIBLE &OutputType)
 
 void WasapiPlayback::finalizeFormat(WAVEFORMATEXTENSIBLE &OutputType)
 {
-    if(!GetConfigValueBool(mDevice->DeviceName, "wasapi", "allow-resampler", true))
+    if(!GetConfigValueBool(mDevice->mDeviceName, "wasapi", "allow-resampler", true))
         mDevice->Frequency = uint(OutputType.Format.nSamplesPerSec);
     else
         mDevice->Frequency = std::min(mDevice->Frequency, uint(OutputType.Format.nSamplesPerSec));
@@ -1719,6 +1734,12 @@ auto WasapiPlayback::initSpatial() -> bool
     if(!MakeExtensible(&OutputType, preferredFormat))
         return false;
 
+    /* This seems to be the format of each "object", which should be mono. */
+    if(!(OutputType.Format.nChannels == 1
+        && (OutputType.dwChannelMask == MONO || !OutputType.dwChannelMask)))
+        ERR("Unhandled channel config: %d -- 0x%08lx\n", OutputType.Format.nChannels,
+            OutputType.dwChannelMask);
+
     /* Force 32-bit float. This is currently required for planar output. */
     if(OutputType.Format.wFormatTag != WAVE_FORMAT_EXTENSIBLE
         && OutputType.Format.wFormatTag != WAVE_FORMAT_IEEE_FLOAT)
@@ -1742,51 +1763,16 @@ auto WasapiPlayback::initSpatial() -> bool
     if(!mDevice->Flags.test(FrequencyRequest))
         mDevice->Frequency = OutputType.Format.nSamplesPerSec;
 
-    bool isRear51{false};
-    if(!mDevice->Flags.test(ChannelsRequest))
-    {
-        const uint32_t chancount{OutputType.Format.nChannels};
-        const DWORD chanmask{OutputType.dwChannelMask};
-        if(chancount >= 12 && (chanmask&X714Mask) == X7DOT1DOT4)
-            mDevice->FmtChans = DevFmtX714;
-        else if(chancount >= 8 && (chanmask&X71Mask) == X7DOT1)
-            mDevice->FmtChans = DevFmtX71;
-        else if(chancount >= 7 && (chanmask&X61Mask) == X6DOT1)
-            mDevice->FmtChans = DevFmtX61;
-        else if(chancount >= 6 && (chanmask&X51Mask) == X5DOT1)
-            mDevice->FmtChans = DevFmtX51;
-        else if(chancount >= 6 && (chanmask&X51RearMask) == X5DOT1REAR)
-        {
-            mDevice->FmtChans = DevFmtX51;
-            isRear51 = true;
-        }
-        else if(chancount >= 4 && (chanmask&QuadMask) == QUAD)
-            mDevice->FmtChans = DevFmtQuad;
-        else if(chancount >= 2 && ((chanmask&StereoMask) == STEREO || !chanmask))
-            mDevice->FmtChans = DevFmtStereo;
-        /* HACK: Don't autoselect mono. Wine returns this and makes the audio
-         * terrible.
-         */
-        else if(!(chancount >= 1 && ((chanmask&MonoMask) == MONO || !chanmask)))
-            ERR("Unhandled channel config: %d -- 0x%08lx\n", chancount, chanmask);
-    }
-    else
-    {
-        const uint32_t chancount{OutputType.Format.nChannels};
-        const DWORD chanmask{OutputType.dwChannelMask};
-        isRear51 = (chancount == 6 && (chanmask&X51RearMask) == X5DOT1REAR);
-    }
-
-    auto getTypeMask = [isRear51](DevFmtChannels chans) noexcept
+    auto getTypeMask = [](DevFmtChannels chans) noexcept
     {
         switch(chans)
         {
         case DevFmtMono: return ChannelMask_Mono;
         case DevFmtStereo: return ChannelMask_Stereo;
         case DevFmtQuad: return ChannelMask_Quad;
-        case DevFmtX51: return isRear51 ? ChannelMask_X51Rear : ChannelMask_X51;
+        case DevFmtX51: return ChannelMask_X51;
         case DevFmtX61: return ChannelMask_X61;
-        case DevFmtX3D71:
+        case DevFmtX3D71: [[fallthrough]];
         case DevFmtX71: return ChannelMask_X71;
         case DevFmtX714: return ChannelMask_X714;
         case DevFmtX7144: return ChannelMask_X7144;
@@ -1820,7 +1806,7 @@ auto WasapiPlayback::initSpatial() -> bool
     mDevice->Flags.reset(DirectEar).set(Virtualization);
     if(streamParams.StaticObjectTypeMask == ChannelMask_Stereo)
         mDevice->FmtChans = DevFmtStereo;
-    if(!GetConfigValueBool(mDevice->DeviceName, "wasapi", "allow-resampler", true))
+    if(!GetConfigValueBool(mDevice->mDeviceName, "wasapi", "allow-resampler", true))
         mDevice->Frequency = uint(OutputType.Format.nSamplesPerSec);
     else
         mDevice->Frequency = std::min(mDevice->Frequency,
@@ -1838,8 +1824,8 @@ auto WasapiPlayback::initSpatial() -> bool
      * Unfortunately this won't get the buffer size of the
      * ISpatialAudioObjectRenderStream, so we only assume there's two periods.
      */
-    mOrigUpdateSize = mDevice->UpdateSize;
-    mOrigBufferSize = mOrigUpdateSize*2;
+    mOutUpdateSize = mDevice->UpdateSize;
+    mOutBufferSize = mOutUpdateSize*2;
     ReferenceTime per_time{ReferenceTime{seconds{mDevice->UpdateSize}} / mDevice->Frequency};
 
     ComPtr<IAudioClient> tmpClient;
@@ -1854,8 +1840,8 @@ auto WasapiPlayback::initSpatial() -> bool
             ERR("Failed to get device period: 0x%08lx\n", hr);
         else
         {
-            mOrigUpdateSize = RefTime2Samples(per_time, mFormat.Format.nSamplesPerSec);
-            mOrigBufferSize = mOrigUpdateSize*2;
+            mOutUpdateSize = RefTime2Samples(per_time, mFormat.Format.nSamplesPerSec);
+            mOutBufferSize = mOutUpdateSize*2;
         }
     }
     tmpClient = nullptr;
@@ -1878,7 +1864,7 @@ auto WasapiPlayback::initSpatial() -> bool
 
         TRACE("Created converter for %s/%s format, dst: %luhz (%u), src: %uhz (%u)\n",
             DevFmtChannelsString(mDevice->FmtChans), DevFmtTypeString(mDevice->FmtType),
-            mFormat.Format.nSamplesPerSec, mOrigUpdateSize, mDevice->Frequency,
+            mFormat.Format.nSamplesPerSec, mOutUpdateSize, mDevice->Frequency,
             mDevice->UpdateSize);
     }
 
@@ -1895,7 +1881,7 @@ bool WasapiPlayback::reset()
 
 HRESULT WasapiPlayback::resetProxy()
 {
-    if(GetConfigValueBool(mDevice->DeviceName, "wasapi", "spatial-api", false))
+    if(GetConfigValueBool(mDevice->mDeviceName, "wasapi", "spatial-api", false))
     {
         if(initSpatial())
             return S_OK;
@@ -1997,12 +1983,19 @@ HRESULT WasapiPlayback::resetProxy()
         return hr;
     }
 
+    hr = audio.mClient->GetService(__uuidof(IAudioRenderClient), al::out_ptr(audio.mRender));
+    if(FAILED(hr))
+    {
+        ERR("Failed to get IAudioRenderClient: 0x%08lx\n", hr);
+        return hr;
+    }
+
     /* Find the nearest multiple of the period size to the update size */
     if(min_per < per_time)
         min_per *= std::max<int64_t>((per_time + min_per/2) / min_per, 1_i64);
 
-    mOrigBufferSize = buffer_len;
-    mOrigUpdateSize = std::min(RefTime2Samples(min_per, mFormat.Format.nSamplesPerSec),
+    mOutBufferSize = buffer_len;
+    mOutUpdateSize = std::min(RefTime2Samples(min_per, mFormat.Format.nSamplesPerSec),
         buffer_len/2u);
 
     mDevice->BufferSize = static_cast<uint>(uint64_t{buffer_len} * mDevice->Frequency /
@@ -2024,7 +2017,7 @@ HRESULT WasapiPlayback::resetProxy()
 
         TRACE("Created converter for %s/%s format, dst: %luhz (%u), src: %uhz (%u)\n",
             DevFmtChannelsString(mDevice->FmtChans), DevFmtTypeString(mDevice->FmtType),
-            mFormat.Format.nSamplesPerSec, mOrigUpdateSize, mDevice->Frequency,
+            mFormat.Format.nSamplesPerSec, mOutUpdateSize, mDevice->Frequency,
             mDevice->UpdateSize);
     }
 
@@ -2044,8 +2037,6 @@ HRESULT WasapiPlayback::startProxy()
 {
     ResetEvent(mNotifyEvent);
 
-    auto mstate_fallback = [](std::monostate) -> HRESULT
-    { return E_FAIL; };
     auto start_plain = [&](PlainDevice &audio) -> HRESULT
     {
         HRESULT hr{audio.mClient->Start()};
@@ -2055,21 +2046,15 @@ HRESULT WasapiPlayback::startProxy()
             return hr;
         }
 
-        hr = audio.mClient->GetService(__uuidof(IAudioRenderClient), al::out_ptr(audio.mRender));
-        if(SUCCEEDED(hr))
-        {
-            try {
-                mKillNow.store(false, std::memory_order_release);
-                mThread = std::thread{std::mem_fn(&WasapiPlayback::mixerProc), this};
-            }
-            catch(...) {
-                audio.mRender = nullptr;
-                ERR("Failed to start thread\n");
-                hr = E_FAIL;
-            }
+        try {
+            mKillNow.store(false, std::memory_order_release);
+            mThread = std::thread{std::mem_fn(&WasapiPlayback::mixerProc), this};
         }
-        if(FAILED(hr))
+        catch(...) {
+            ERR("Failed to start thread\n");
             audio.mClient->Stop();
+            hr = E_FAIL;
+        }
         return hr;
     };
     auto start_spatial = [&](SpatialDevice &audio) -> HRESULT
@@ -2098,7 +2083,7 @@ HRESULT WasapiPlayback::startProxy()
         return hr;
     };
 
-    return std::visit(overloaded{mstate_fallback, start_plain, start_spatial}, mAudio);
+    return std::visit(overloaded{start_plain, start_spatial}, mAudio);
 }
 
 
@@ -2113,19 +2098,14 @@ void WasapiPlayback::stopProxy()
     mKillNow.store(true, std::memory_order_release);
     mThread.join();
 
-    auto mstate_fallback = [](std::monostate) -> void
-    { };
     auto stop_plain = [](PlainDevice &audio) -> void
-    {
-        audio.mRender = nullptr;
-        audio.mClient->Stop();
-    };
+    { audio.mClient->Stop(); };
     auto stop_spatial = [](SpatialDevice &audio) -> void
     {
         audio.mRender->Stop();
         audio.mRender->Reset();
     };
-    std::visit(overloaded{mstate_fallback, stop_plain, stop_spatial}, mAudio);
+    std::visit(overloaded{stop_plain, stop_spatial}, mAudio);
 }
 
 
@@ -2238,30 +2218,30 @@ FORCE_ALIGN int WasapiCapture::recordProc()
                     const void *srcdata{rdata};
                     uint srcframes{numsamples};
 
-                    dstframes = mSampleConv->convert(&srcdata, &srcframes, data.first.buf,
-                        static_cast<uint>(std::min(data.first.len, lenlimit)));
-                    if(srcframes > 0 && dstframes == data.first.len && data.second.len > 0)
+                    dstframes = mSampleConv->convert(&srcdata, &srcframes, data[0].buf,
+                        static_cast<uint>(std::min(data[0].len, lenlimit)));
+                    if(srcframes > 0 && dstframes == data[0].len && data[1].len > 0)
                     {
                         /* If some source samples remain, all of the first dest
                          * block was filled, and there's space in the second
                          * dest block, do another run for the second block.
                          */
-                        dstframes += mSampleConv->convert(&srcdata, &srcframes, data.second.buf,
-                            static_cast<uint>(std::min(data.second.len, lenlimit)));
+                        dstframes += mSampleConv->convert(&srcdata, &srcframes, data[1].buf,
+                            static_cast<uint>(std::min(data[1].len, lenlimit)));
                     }
                 }
                 else
                 {
                     const uint framesize{mDevice->frameSizeFromFmt()};
                     auto dst = al::span{rdata, size_t{numsamples}*framesize};
-                    size_t len1{std::min(data.first.len, size_t{numsamples})};
-                    size_t len2{std::min(data.second.len, numsamples-len1)};
+                    size_t len1{std::min(data[0].len, size_t{numsamples})};
+                    size_t len2{std::min(data[1].len, numsamples-len1)};
 
-                    memcpy(data.first.buf, dst.data(), len1*framesize);
+                    memcpy(data[0].buf, dst.data(), len1*framesize);
                     if(len2 > 0)
                     {
                         dst = dst.subspan(len1*framesize);
-                        memcpy(data.second.buf, dst.data(), len2*framesize);
+                        memcpy(data[1].buf, dst.data(), len2*framesize);
                     }
                     dstframes = len1 + len2;
                 }
@@ -2301,9 +2281,6 @@ void WasapiCapture::open(std::string_view name)
         throw al::backend_exception{al::backend_error::DeviceError,
             "Failed to create notify events"};
     }
-
-    if(const auto prefix = GetDevicePrefix(); al::starts_with(name, prefix))
-        name = name.substr(prefix.size());
 
     mOpenStatus = pushMessage(MsgType::OpenDevice, name).get();
     if(FAILED(mOpenStatus))
@@ -2354,21 +2331,23 @@ HRESULT WasapiCapture::openProxy(std::string_view name)
     }
     mClient = nullptr;
     if(!devname.empty())
-        mDevice->DeviceName = std::string{GetDevicePrefix()}+std::move(devname);
+        mDeviceName = std::move(devname);
     else
-        mDevice->DeviceName = std::string{GetDevicePrefix()}+GetDeviceNameAndGuid(mMMDev).first;
+        mDeviceName = GetDeviceNameAndGuid(mMMDev).mName;
 
     return S_OK;
 }
 
 void WasapiCapture::closeProxy()
 {
+    mCapture = nullptr;
     mClient = nullptr;
     mMMDev = nullptr;
 }
 
 HRESULT WasapiCapture::resetProxy()
 {
+    mCapture = nullptr;
     mClient = nullptr;
 
     HRESULT hr{sDeviceHelper->activateAudioClient(mMMDev, __uuidof(IAudioClient),
@@ -2628,6 +2607,13 @@ HRESULT WasapiCapture::resetProxy()
         return hr;
     }
 
+    hr = mClient->GetService(__uuidof(IAudioCaptureClient), al::out_ptr(mCapture));
+    if(FAILED(hr))
+    {
+        ERR("Failed to get IAudioCaptureClient: 0x%08lx\n", hr);
+        return hr;
+    }
+
     UINT32 buffer_len{};
     ReferenceTime min_per{};
     hr = mClient->GetDevicePeriod(&reinterpret_cast<REFERENCE_TIME&>(min_per), nullptr);
@@ -2673,24 +2659,15 @@ HRESULT WasapiCapture::startProxy()
         return hr;
     }
 
-    hr = mClient->GetService(__uuidof(IAudioCaptureClient), al::out_ptr(mCapture));
-    if(SUCCEEDED(hr))
-    {
-        try {
-            mKillNow.store(false, std::memory_order_release);
-            mThread = std::thread{std::mem_fn(&WasapiCapture::recordProc), this};
-        }
-        catch(...) {
-            mCapture = nullptr;
-            ERR("Failed to start thread\n");
-            hr = E_FAIL;
-        }
+    try {
+        mKillNow.store(false, std::memory_order_release);
+        mThread = std::thread{std::mem_fn(&WasapiCapture::recordProc), this};
     }
-
-    if(FAILED(hr))
-    {
+    catch(...) {
+        ERR("Failed to start thread\n");
         mClient->Stop();
         mClient->Reset();
+        hr = E_FAIL;
     }
 
     return hr;
@@ -2702,13 +2679,12 @@ void WasapiCapture::stop()
 
 void WasapiCapture::stopProxy()
 {
-    if(!mCapture || !mThread.joinable())
+    if(!mThread.joinable())
         return;
 
     mKillNow.store(true, std::memory_order_release);
     mThread.join();
 
-    mCapture = nullptr;
     mClient->Stop();
     mClient->Reset();
 }
@@ -2757,11 +2733,11 @@ auto WasapiBackendFactory::enumerate(BackendType type) -> std::vector<std::strin
             {
                 if(entry.devid != defaultId)
                 {
-                    outnames.emplace_back(std::string{GetDevicePrefix()}+entry.name);
+                    outnames.emplace_back(entry.name);
                     continue;
                 }
                 /* Default device goes first. */
-                outnames.emplace(outnames.cbegin(), std::string{GetDevicePrefix()}+entry.name);
+                outnames.emplace(outnames.cbegin(), entry.name);
             }
         }
         break;
@@ -2773,10 +2749,10 @@ auto WasapiBackendFactory::enumerate(BackendType type) -> std::vector<std::strin
             {
                 if(entry.devid != defaultId)
                 {
-                    outnames.emplace_back(std::string{GetDevicePrefix()}+entry.name);
+                    outnames.emplace_back(entry.name);
                     continue;
                 }
-                outnames.emplace(outnames.cbegin(), std::string{GetDevicePrefix()}+entry.name);
+                outnames.emplace(outnames.cbegin(), entry.name);
             }
         }
         break;

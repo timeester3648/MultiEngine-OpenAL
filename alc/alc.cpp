@@ -153,6 +153,9 @@
 #ifdef HAVE_SDL2
 #include "backends/sdl2.h"
 #endif
+#ifdef HAVE_OTHERIO
+#include "backends/otherio.h"
+#endif
 #ifdef HAVE_WAVE
 #include "backends/wave.h"
 #endif
@@ -245,6 +248,9 @@ std::array BackendList{
 #ifdef HAVE_SDL2
     BackendInfo{"sdl2", SDL2BackendFactory::getFactory},
 #endif
+#ifdef HAVE_OTHERIO
+    BackendInfo{"otherio", OtherIOBackendFactory::getFactory},
+#endif
 
     BackendInfo{"null", NullBackendFactory::getFactory},
 #ifdef HAVE_WAVE
@@ -264,6 +270,12 @@ BackendFactory *CaptureFactory{};
 [[nodiscard]] constexpr auto GetOutOfMemoryString() noexcept { return "Out of Memory"; }
 
 [[nodiscard]] constexpr auto GetDefaultName() noexcept { return "OpenAL Soft\0"; }
+
+#ifdef _WIN32
+[[nodiscard]] constexpr auto GetDevicePrefix() noexcept { return "OpenAL Soft on "sv; }
+#else
+[[nodiscard]] constexpr auto GetDevicePrefix() noexcept { return std::string_view{}; }
+#endif
 
 /************************************************
  * Global variables
@@ -719,6 +731,10 @@ void ProbeAllDevicesList()
     else
     {
         alcAllDevicesArray = PlaybackFactory->enumerate(BackendType::Playback);
+        if(const auto prefix = GetDevicePrefix(); !prefix.empty())
+            std::for_each(alcAllDevicesArray.begin(), alcAllDevicesArray.end(),
+                [prefix](std::string &name) { name.insert(0, prefix); });
+
         decltype(alcAllDevicesList){}.swap(alcAllDevicesList);
         if(alcAllDevicesArray.empty())
             alcAllDevicesList += '\0';
@@ -739,6 +755,10 @@ void ProbeCaptureDeviceList()
     else
     {
         alcCaptureDeviceArray = CaptureFactory->enumerate(BackendType::Capture);
+        if(const auto prefix = GetDevicePrefix(); !prefix.empty())
+            std::for_each(alcCaptureDeviceArray.begin(), alcCaptureDeviceArray.end(),
+                [prefix](std::string &name) { name.insert(0, prefix); });
+
         decltype(alcCaptureDeviceList){}.swap(alcCaptureDeviceList);
         if(alcCaptureDeviceArray.empty())
             alcCaptureDeviceList += '\0';
@@ -1650,7 +1670,9 @@ ALCenum UpdateDeviceParams(ALCdevice *device, const al::span<const int> attrList
     FPUCtl mixer_mode{};
     auto reset_context = [device](ContextBase *ctxbase)
     {
-        auto *context = static_cast<ALCcontext*>(ctxbase);
+        auto *context = dynamic_cast<ALCcontext*>(ctxbase);
+        assert(context != nullptr);
+        if(!context) return;
 
         std::unique_lock<std::mutex> proplock{context->mPropLock};
         std::unique_lock<std::mutex> slotlock{context->mEffectSlotLock};
@@ -1834,8 +1856,9 @@ bool ResetDeviceParams(ALCdevice *device, const al::span<const int> attrList)
 
         for(ContextBase *ctxbase : *device->mContexts.load(std::memory_order_acquire))
         {
-            auto *ctx = static_cast<ALCcontext*>(ctxbase);
-            if(!ctx->mStopVoicesOnDisconnect.load(std::memory_order_acquire))
+            auto *ctx = dynamic_cast<ALCcontext*>(ctxbase);
+            assert(ctx != nullptr);
+            if(!ctx || !ctx->mStopVoicesOnDisconnect.load(std::memory_order_acquire))
                 continue;
 
             /* Clear any pending voice changes and reallocate voices to get a
@@ -1963,7 +1986,7 @@ ALC_API void ALC_APIENTRY alcSuspendContext(ALCcontext *context) noexcept
         return;
     }
 
-    if(context->mContextFlags.test(ContextFlags::DebugBit)) UNLIKELY
+    if(ctx->mContextFlags.test(ContextFlags::DebugBit)) UNLIKELY
         ctx->debugMessage(DebugSource::API, DebugType::Portability, 0, DebugSeverity::Medium,
             "alcSuspendContext behavior is not portable -- some implementations suspend all "
             "rendering, some only defer property changes, and some are completely no-op; consider "
@@ -1986,8 +2009,8 @@ ALC_API void ALC_APIENTRY alcProcessContext(ALCcontext *context) noexcept
         return;
     }
 
-    if(context->mContextFlags.test(ContextFlags::DebugBit)) UNLIKELY
-        ctx->debugMessage(DebugSource::API, DebugType::Portability, 0, DebugSeverity::Medium,
+    if(ctx->mContextFlags.test(ContextFlags::DebugBit)) UNLIKELY
+        ctx->debugMessage(DebugSource::API, DebugType::Portability, 1, DebugSeverity::Medium,
             "alcProcessContext behavior is not portable -- some implementations resume rendering, "
             "some apply deferred property changes, and some are completely no-op; consider using "
             "alcDeviceResumeSOFT to resume rendering, or alProcessUpdatesSOFT to apply deferred "
@@ -2028,7 +2051,7 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *Device, ALCenum para
             else
             {
                 std::lock_guard<std::mutex> statelock{dev->StateLock};
-                value = dev->DeviceName.c_str();
+                value = dev->mDeviceName.c_str();
             }
         }
         else
@@ -2046,7 +2069,7 @@ ALC_API const ALCchar* ALC_APIENTRY alcGetString(ALCdevice *Device, ALCenum para
             else
             {
                 std::lock_guard<std::mutex> statelock{dev->StateLock};
-                value = dev->DeviceName.c_str();
+                value = dev->mDeviceName.c_str();
             }
         }
         else
@@ -2906,6 +2929,13 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName) noexcep
             || al::starts_with(devname, "'("sv)
             || al::case_compare(devname, "openal-soft"sv) == 0)
             devname = {};
+        else
+        {
+            const auto prefix = GetDevicePrefix();
+            if(!prefix.empty() && devname.size() > prefix.size()
+                && al::starts_with(devname, prefix))
+                devname = devname.substr(prefix.size());
+        }
     }
     else
         TRACE("Opening default playback device\n");
@@ -2942,6 +2972,7 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName) noexcep
         auto backend = PlaybackFactory->createBackend(device.get(), BackendType::Playback);
         std::lock_guard<std::recursive_mutex> listlock{ListLock};
         backend->open(devname);
+        device->mDeviceName = std::string{GetDevicePrefix()}+backend->mDeviceName;
         device->Backend = std::move(backend);
     }
     catch(al::backend_exception &e) {
@@ -2951,13 +2982,34 @@ ALC_API ALCdevice* ALC_APIENTRY alcOpenDevice(const ALCchar *deviceName) noexcep
         return nullptr;
     }
 
+    auto checkopt = [&device](const char *envname, const std::string_view optname)
+    {
+        if(auto optval = al::getenv(envname)) return optval;
+        return device->configValue<std::string>("game_compat", optname);
+    };
+    if(auto overrideopt = checkopt("__ALSOFT_VENDOR_OVERRIDE", "vendor-override"sv))
+    {
+        device->mVendorOverride = std::move(*overrideopt);
+        TRACE("Overriding vendor string: \"%s\"\n", device->mVendorOverride.c_str());
+    }
+    if(auto overrideopt = checkopt("__ALSOFT_VERSION_OVERRIDE", "version-override"sv))
+    {
+        device->mVersionOverride = std::move(*overrideopt);
+        TRACE("Overriding version string: \"%s\"\n", device->mVersionOverride.c_str());
+    }
+    if(auto overrideopt = checkopt("__ALSOFT_RENDERER_OVERRIDE", "renderer-override"sv))
+    {
+        device->mRendererOverride = std::move(*overrideopt);
+        TRACE("Overriding renderer string: \"%s\"\n", device->mRendererOverride.c_str());
+    }
+
     {
         std::lock_guard<std::recursive_mutex> listlock{ListLock};
         auto iter = std::lower_bound(DeviceList.cbegin(), DeviceList.cend(), device.get());
         DeviceList.emplace(iter, device.get());
     }
 
-    TRACE("Created device %p, \"%s\"\n", voidp{device.get()}, device->DeviceName.c_str());
+    TRACE("Created device %p, \"%s\"\n", voidp{device.get()}, device->mDeviceName.c_str());
     return device.release();
 }
 
@@ -3038,6 +3090,13 @@ ALC_API ALCdevice* ALC_APIENTRY alcCaptureOpenDevice(const ALCchar *deviceName, 
         if(al::case_compare(devname, GetDefaultName()) == 0
             || al::case_compare(devname, "openal-soft"sv) == 0)
             devname = {};
+        else
+        {
+            const auto prefix = GetDevicePrefix();
+            if(!prefix.empty() && devname.size() > prefix.size()
+                && al::starts_with(devname, prefix))
+                devname = devname.substr(prefix.size());
+        }
     }
     else
         TRACE("Opening default capture device\n");
@@ -3075,6 +3134,7 @@ ALC_API ALCdevice* ALC_APIENTRY alcCaptureOpenDevice(const ALCchar *deviceName, 
         auto backend = CaptureFactory->createBackend(device.get(), BackendType::Capture);
         std::lock_guard<std::recursive_mutex> listlock{ListLock};
         backend->open(devname);
+        device->mDeviceName = std::string{GetDevicePrefix()}+backend->mDeviceName;
         device->Backend = std::move(backend);
     }
     catch(al::backend_exception &e) {
@@ -3091,7 +3151,7 @@ ALC_API ALCdevice* ALC_APIENTRY alcCaptureOpenDevice(const ALCchar *deviceName, 
     }
     device->mDeviceState = DeviceState::Configured;
 
-    TRACE("Created capture device %p, \"%s\"\n", voidp{device.get()}, device->DeviceName.c_str());
+    TRACE("Created capture device %p, \"%s\"\n", voidp{device.get()}, device->mDeviceName.c_str());
     return device.release();
 }
 
@@ -3249,6 +3309,7 @@ ALC_API ALCdevice* ALC_APIENTRY alcLoopbackOpenDeviceSOFT(const ALCchar *deviceN
         auto backend = LoopbackBackendFactory::getFactory().createBackend(device.get(),
             BackendType::Playback);
         backend->open("Loopback");
+        device->mDeviceName = std::string{GetDevicePrefix()}+backend->mDeviceName;
         device->Backend = std::move(backend);
     }
     catch(al::backend_exception &e) {
@@ -3460,6 +3521,13 @@ FORCE_ALIGN ALCboolean ALC_APIENTRY alcReopenDeviceSOFT(ALCdevice *device,
         }
         if(al::case_compare(devname, GetDefaultName()) == 0)
             devname = {};
+        else
+        {
+            const auto prefix = GetDevicePrefix();
+            if(!prefix.empty() && devname.size() > prefix.size()
+                && al::starts_with(devname, prefix))
+                devname = devname.substr(prefix.size());
+        }
     }
 
     /* Force the backend device to stop first since we're opening another one. */
@@ -3498,9 +3566,34 @@ FORCE_ALIGN ALCboolean ALC_APIENTRY alcReopenDeviceSOFT(ALCdevice *device,
         return ALC_FALSE;
     }
     listlock.unlock();
+    dev->mDeviceName = std::string{GetDevicePrefix()}+newbackend->mDeviceName;
     dev->Backend = std::move(newbackend);
     dev->mDeviceState = DeviceState::Unprepared;
-    TRACE("Reopened device %p, \"%s\"\n", voidp{dev.get()}, dev->DeviceName.c_str());
+    TRACE("Reopened device %p, \"%s\"\n", voidp{dev.get()}, dev->mDeviceName.c_str());
+
+    std::string{}.swap(dev->mVendorOverride);
+    std::string{}.swap(dev->mVersionOverride);
+    std::string{}.swap(dev->mRendererOverride);
+    auto checkopt = [&dev](const char *envname, const std::string_view optname)
+    {
+        if(auto optval = al::getenv(envname)) return optval;
+        return dev->configValue<std::string>("game_compat", optname);
+    };
+    if(auto overrideopt = checkopt("__ALSOFT_VENDOR_OVERRIDE", "vendor-override"sv))
+    {
+        dev->mVendorOverride = std::move(*overrideopt);
+        TRACE("Overriding vendor string: \"%s\"\n", dev->mVendorOverride.c_str());
+    }
+    if(auto overrideopt = checkopt("__ALSOFT_VERSION_OVERRIDE", "version-override"sv))
+    {
+        dev->mVersionOverride = std::move(*overrideopt);
+        TRACE("Overriding version string: \"%s\"\n", dev->mVersionOverride.c_str());
+    }
+    if(auto overrideopt = checkopt("__ALSOFT_RENDERER_OVERRIDE", "renderer-override"sv))
+    {
+        dev->mRendererOverride = std::move(*overrideopt);
+        TRACE("Overriding renderer string: \"%s\"\n", dev->mRendererOverride.c_str());
+    }
 
     /* Always return true even if resetting fails. It shouldn't fail, but this
      * is primarily to avoid confusion by the app seeing the function return
@@ -3528,25 +3621,23 @@ FORCE_ALIGN ALCenum ALC_APIENTRY alcEventIsSupportedSOFT(ALCenum eventType, ALCe
     {
         WARN("Invalid event type: 0x%04x\n", eventType);
         alcSetError(nullptr, ALC_INVALID_ENUM);
-        return ALC_EVENT_NOT_SUPPORTED_SOFT;
+        return ALC_FALSE;
     }
 
     auto supported = alc::EventSupport::NoSupport;
     switch(deviceType)
     {
-        case ALC_PLAYBACK_DEVICE_SOFT:
-            if(PlaybackFactory)
-                supported = PlaybackFactory->queryEventSupport(*etype, BackendType::Playback);
-            break;
+    case ALC_PLAYBACK_DEVICE_SOFT:
+        if(PlaybackFactory)
+            supported = PlaybackFactory->queryEventSupport(*etype, BackendType::Playback);
+        return al::to_underlying(supported);
 
-        case ALC_CAPTURE_DEVICE_SOFT:
-            if(CaptureFactory)
-                supported = CaptureFactory->queryEventSupport(*etype, BackendType::Capture);
-            break;
-
-        default:
-            WARN("Invalid device type: 0x%04x\n", deviceType);
-            alcSetError(nullptr, ALC_INVALID_ENUM);
+    case ALC_CAPTURE_DEVICE_SOFT:
+        if(CaptureFactory)
+            supported = CaptureFactory->queryEventSupport(*etype, BackendType::Capture);
+        return al::to_underlying(supported);
     }
-    return al::to_underlying(supported);
+    WARN("Invalid device type: 0x%04x\n", deviceType);
+    alcSetError(nullptr, ALC_INVALID_ENUM);
+    return ALC_FALSE;
 }

@@ -69,6 +69,7 @@ _Pragma("GCC diagnostic pop")
 #include "AL/al.h"
 #include "AL/alext.h"
 
+#include "almalloc.h"
 #include "alnumbers.h"
 #include "alnumeric.h"
 #include "alspan.h"
@@ -983,7 +984,8 @@ int AudioState::handler()
                 {
                     mDstChanLayout = layoutmask;
                     mFrameSize *= 4;
-                    mFormat = alGetEnumValue("AL_FORMAT_QUAD32");
+                    mFormat = EnableUhj ? AL_FORMAT_UHJ4CHN_FLOAT32_SOFT
+                        : alGetEnumValue("AL_FORMAT_QUAD32");
                 }
             }
             if(layoutmask == AV_CH_LAYOUT_MONO)
@@ -1044,7 +1046,8 @@ int AudioState::handler()
                 {
                     mDstChanLayout = layoutmask;
                     mFrameSize *= 4;
-                    mFormat = alGetEnumValue("AL_FORMAT_QUAD8");
+                    mFormat = EnableUhj ? AL_FORMAT_UHJ4CHN8_SOFT
+                        : alGetEnumValue("AL_FORMAT_QUAD8");
                 }
             }
             if(layoutmask == AV_CH_LAYOUT_MONO)
@@ -1097,7 +1100,8 @@ int AudioState::handler()
                 {
                     mDstChanLayout = layoutmask;
                     mFrameSize *= 4;
-                    mFormat = alGetEnumValue("AL_FORMAT_QUAD16");
+                    mFormat = EnableUhj ? AL_FORMAT_UHJ4CHN16_SOFT
+                        : alGetEnumValue("AL_FORMAT_QUAD16");
                 }
             }
             if(layoutmask == AV_CH_LAYOUT_MONO)
@@ -1153,10 +1157,9 @@ int AudioState::handler()
         ChannelLayout layout{};
         av_channel_layout_from_string(&layout, "ambisonic 1");
 
-        SwrContext *ps{};
-        int err{swr_alloc_set_opts2(&ps, &layout, mDstSampleFmt, mCodecCtx->sample_rate,
-            &mCodecCtx->ch_layout, mCodecCtx->sample_fmt, mCodecCtx->sample_rate, 0, nullptr)};
-        mSwresCtx.reset(ps);
+        int err{swr_alloc_set_opts2(al::out_ptr(mSwresCtx), &layout, mDstSampleFmt,
+            mCodecCtx->sample_rate, &mCodecCtx->ch_layout, mCodecCtx->sample_fmt,
+            mCodecCtx->sample_rate, 0, nullptr)};
         if(err != 0)
         {
             std::array<char,AV_ERROR_MAX_STRING_SIZE> errstr{};
@@ -1187,10 +1190,9 @@ int AudioState::handler()
         ChannelLayout layout{};
         av_channel_layout_from_mask(&layout, mDstChanLayout);
 
-        SwrContext *ps{};
-        int err{swr_alloc_set_opts2(&ps, &layout, mDstSampleFmt, mCodecCtx->sample_rate,
-            &mCodecCtx->ch_layout, mCodecCtx->sample_fmt, mCodecCtx->sample_rate, 0, nullptr)};
-        mSwresCtx.reset(ps);
+        int err{swr_alloc_set_opts2(al::out_ptr(mSwresCtx), &layout, mDstSampleFmt,
+            mCodecCtx->sample_rate, &mCodecCtx->ch_layout, mCodecCtx->sample_fmt,
+            mCodecCtx->sample_rate, 0, nullptr)};
         if(err != 0)
         {
             std::array<char,AV_ERROR_MAX_STRING_SIZE> errstr{};

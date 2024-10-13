@@ -1432,7 +1432,7 @@ class PipeWirePlayback final : public BackendBase {
     PwStreamPtr mStream;
     spa_hook mStreamListener{};
     spa_io_rate_match *mRateMatch{};
-    std::vector<float*> mChannelPtrs;
+    std::vector<void*> mChannelPtrs;
 
     static constexpr pw_stream_events CreateEvents()
     {
@@ -1503,7 +1503,7 @@ void PipeWirePlayback::outputCallback() noexcept
     for(const auto &data : datas)
     {
         length = std::min(length, data.maxsize/uint{sizeof(float)});
-        *chanptr_end = static_cast<float*>(data.data);
+        *chanptr_end = data.data;
         ++chanptr_end;
 
         data.chunk->offset = 0;
@@ -1600,9 +1600,9 @@ void PipeWirePlayback::open(std::string_view name)
 
     mTargetId = targetid;
     if(!devname.empty())
-        mDevice->DeviceName = std::move(devname);
+        mDeviceName = std::move(devname);
     else
-        mDevice->DeviceName = "PipeWire Output"sv;
+        mDeviceName = "PipeWire Output"sv;
 }
 
 bool PipeWirePlayback::reset()
@@ -1698,7 +1698,7 @@ bool PipeWirePlayback::reset()
 
     pw_stream_flags flags{PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_INACTIVE
         | PW_STREAM_FLAG_MAP_BUFFERS};
-    if(GetConfigValueBool(mDevice->DeviceName, "pipewire", "rt-mix", false))
+    if(GetConfigValueBool(mDevice->mDeviceName, "pipewire", "rt-mix", false))
         flags |= PW_STREAM_FLAG_RT_PROCESS;
     if(int res{pw_stream_connect(mStream.get(), PW_DIRECTION_OUTPUT, PwIdAny, flags, &params, 1)})
         throw al::backend_exception{al::backend_error::DeviceError,
@@ -2066,9 +2066,9 @@ void PipeWireCapture::open(std::string_view name)
 
     mTargetId = targetid;
     if(!devname.empty())
-        mDevice->DeviceName = std::move(devname);
+        mDeviceName = std::move(devname);
     else
-        mDevice->DeviceName = "PipeWire Input"sv;
+        mDeviceName = "PipeWire Input"sv;
 
 
     bool is51rear{false};
