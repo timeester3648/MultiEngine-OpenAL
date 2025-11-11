@@ -2,25 +2,24 @@
 
 #include "utils.h"
 
-#include <cassert>
 #include <exception>
 
-#include "alstring.h"
 #include "core/logging.h"
+#include "gsl/gsl"
 
 
 void eax_log_exception(std::string_view message) noexcept
 {
     const auto exception_ptr = std::current_exception();
-    assert(exception_ptr);
+    Expects(exception_ptr);
 
     try {
         std::rethrow_exception(exception_ptr);
     }
-    catch(const std::exception& ex) {
-        ERR("%.*s %s\n", al::sizei(message), message.data(), ex.what());
+    catch(std::exception& ex) {
+        ERR("{} {}", message, ex.what());
     }
     catch(...) {
-        ERR("%.*s %s\n", al::sizei(message), message.data(), "Generic exception.");
+        ERR("{} {}", message, "Generic exception.");
     }
 }

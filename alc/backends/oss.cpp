@@ -33,8 +33,8 @@
 #include <cerrno>
 #include <cstring>
 #include <exception>
-#include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -43,13 +43,13 @@
 #include <vector>
 
 #include "alc/alconfig.h"
-#include "almalloc.h"
+#include "alformat.hpp"
 #include "alnumeric.h"
-#include "alstring.h"
 #include "althrd_setname.h"
 #include "core/device.h"
 #include "core/helpers.h"
 #include "core/logging.h"
+#include "gsl/gsl"
 #include "ringbuffer.h"
 
 #include <sys/soundcard.h>
@@ -87,17 +87,12 @@ using namespace std::string_view_literals;
 
 [[nodiscard]] constexpr auto GetDefaultName() noexcept { return "OSS Default"sv; }
 
-std::string DefaultPlayback{"/dev/dsp"s};
-std::string DefaultCapture{"/dev/dsp"s};
+auto DefaultPlayback = "/dev/dsp"s; /* NOLINT(cert-err58-cpp) */
+auto DefaultCapture = "/dev/dsp"s; /* NOLINT(cert-err58-cpp) */
 
 struct DevMap {
     std::string name;
     std::string device_name;
-
-    template<typename T, typename U>
-    DevMap(T&& name_, U&& devname_)
-        : name{std::forward<T>(name_)}, device_name{std::forward<U>(devname_)}
-    { }
 };
 
 std::vector<DevMap> PlaybackDevices;
@@ -110,7 +105,8 @@ std::vector<DevMap> CaptureDevices;
 #define DSP_CAP_INPUT 0x00010000
 void ALCossListPopulate(std::vector<DevMap> &devlist, int type)
 {
-    devlist.emplace_back(GetDefaultName(), (type==DSP_CAP_INPUT) ? DefaultCapture : DefaultPlayback);
+    devlist.emplace_back(std::string{GetDefaultName()},
+        (type==DSP_CAP_INPUT) ? DefaultCapture : DefaultPlayback);
 }
 
 #else
@@ -145,11 +141,11 @@ public:
 void ALCossListAppend(std::vector<DevMap> &list, std::string_view handle, std::string_view path)
 {
 #ifdef ALC_OSS_DEVNODE_TRUC
-    for(size_t i{0};i < path.size();++i)
+    for(usize i{0};i < path.size();++i)
     {
         if(path[i] == '.' && handle.size() >= path.size() - i)
         {
-            const size_t hoffset{handle.size() + i - path.size()};
+            auto const hoffset = handle.size() + i - path.size();
             if(strncmp(path.data() + i, handle.data() + hoffset, path.size() - i) == 0)
                 handle = handle.substr(0, hoffset);
             path = path.substr(0, i);
@@ -159,43 +155,31 @@ void ALCossListAppend(std::vector<DevMap> &list, std::string_view handle, std::s
     if(handle.empty())
         handle = path;
 
-    auto match_devname = [path](const DevMap &entry) -> bool
-    { return entry.device_name == path; };
-    if(std::find_if(list.cbegin(), list.cend(), match_devname) != list.cend())
+    if(std::ranges::find(list, path, &DevMap::device_name) != list.end())
         return;
 
-    auto checkName = [&list](const std::string_view name) -> bool
-    {
-        auto match_name = [name](const DevMap &entry) -> bool { return entry.name == name; };
-        return std::find_if(list.cbegin(), list.cend(), match_name) != list.cend();
-    };
-    int count{1};
-    std::string newname{handle};
-    while(checkName(newname))
-    {
-        newname = handle;
-        newname += " #";
-        newname += std::to_string(++count);
-    }
+    auto count = 1;
+    auto newname = std::string{handle};
+    while(std::ranges::find(list, newname, &DevMap::name) != list.end())
+        newname = al::format("{} #{}", handle, ++count);
 
-    const DevMap &entry = list.emplace_back(std::move(newname), path);
-
-    TRACE("Got device \"%s\", \"%s\"\n", entry.name.c_str(), entry.device_name.c_str());
+    const auto &entry = list.emplace_back(std::move(newname), path);
+    TRACE("Got device \"{}\", \"{}\"", entry.name, entry.device_name);
 }
 
 void ALCossListPopulate(std::vector<DevMap> &devlist, int type_flag)
 {
-    oss_sysinfo si{};
-    FileHandle file;
+    auto si = oss_sysinfo{};
+    auto file = FileHandle{};
     if(!file.open("/dev/mixer", O_RDONLY))
     {
-        TRACE("Could not open /dev/mixer: %s\n", std::generic_category().message(errno).c_str());
+        TRACE("Could not open /dev/mixer: {}", std::generic_category().message(errno));
         goto done;
     }
 
     if(ioctl(file.get(), SNDCTL_SYSINFO, &si) == -1)
     {
-        TRACE("SNDCTL_SYSINFO failed: %s\n", std::generic_category().message(errno).c_str());
+        TRACE("SNDCTL_SYSINFO failed: {}", std::generic_category().message(errno));
         goto done;
     }
 
@@ -205,8 +189,7 @@ void ALCossListPopulate(std::vector<DevMap> &devlist, int type_flag)
         ai.dev = i;
         if(ioctl(file.get(), SNDCTL_AUDIOINFO, &ai) == -1)
         {
-            ERR("SNDCTL_AUDIOINFO (%d) failed: %s\n", i,
-                std::generic_category().message(errno).c_str());
+            ERR("SNDCTL_AUDIOINFO ({}) failed: {}", i, std::generic_category().message(errno));
             continue;
         }
         if(!(ai.caps&type_flag) || ai.devnode[0] == '\0')
@@ -226,15 +209,12 @@ done:
     file.close();
 
     const char *defdev{((type_flag==DSP_CAP_INPUT) ? DefaultCapture : DefaultPlayback).c_str()};
-    auto iter = std::find_if(devlist.cbegin(), devlist.cend(),
-        [defdev](const DevMap &entry) -> bool
-        { return entry.device_name == defdev; }
-    );
-    if(iter == devlist.cend())
+    auto iter = std::ranges::find(devlist, defdev, &DevMap::device_name);
+    if(iter == devlist.end())
         devlist.insert(devlist.begin(), DevMap{GetDefaultName(), defdev});
     else
     {
-        DevMap entry{std::move(*iter)};
+        auto entry = DevMap{std::move(*iter)};
         devlist.erase(iter);
         devlist.insert(devlist.begin(), std::move(entry));
     }
@@ -243,9 +223,9 @@ done:
 
 #endif
 
-uint log2i(uint x)
+constexpr auto log2i(u32 x) -> u32
 {
-    uint y{0};
+    auto y = 0_u32;
     while(x > 1)
     {
         x >>= 1;
@@ -255,14 +235,15 @@ uint log2i(uint x)
 }
 
 
-struct OSSPlayback final : public BackendBase {
-    OSSPlayback(DeviceBase *device) noexcept : BackendBase{device} { }
+struct OSSPlayback final : BackendBase {
+    explicit OSSPlayback(gsl::not_null<DeviceBase*> const device) noexcept : BackendBase{device}
+    { }
     ~OSSPlayback() override;
 
-    int mixerProc();
+    void mixerProc();
 
     void open(std::string_view name) override;
-    bool reset() override;
+    auto reset() -> bool override;
     void start() override;
     void stop() override;
 
@@ -282,63 +263,61 @@ OSSPlayback::~OSSPlayback()
 }
 
 
-int OSSPlayback::mixerProc()
+void OSSPlayback::mixerProc()
 {
     SetRTPriority();
     althrd_setname(GetMixerThreadName());
 
-    const size_t frame_step{mDevice->channelsFromFmt()};
-    const size_t frame_size{mDevice->frameSizeFromFmt()};
+    const auto frame_step = usize{mDevice->channelsFromFmt()};
+    const auto frame_size = usize{mDevice->frameSizeFromFmt()};
 
     while(!mKillNow.load(std::memory_order_acquire)
         && mDevice->Connected.load(std::memory_order_acquire))
     {
-        pollfd pollitem{};
+        auto pollitem = pollfd{};
         pollitem.fd = mFd;
         pollitem.events = POLLOUT;
 
-        if(int pret{poll(&pollitem, 1, 1000)}; pret < 0)
+        if(const auto pret = poll(&pollitem, 1, 1000); pret < 0)
         {
             if(errno == EINTR || errno == EAGAIN)
                 continue;
             const auto errstr = std::generic_category().message(errno);
-            ERR("poll failed: %s\n", errstr.c_str());
-            mDevice->handleDisconnect("Failed waiting for playback buffer: %s", errstr.c_str());
+            ERR("poll failed: {}", errstr);
+            mDevice->handleDisconnect("Failed waiting for playback buffer: {}", errstr);
             break;
         }
         else if(pret == 0) /* NOLINT(*-else-after-return) 'pret' is local to the if/else blocks */
         {
-            WARN("poll timeout\n");
+            WARN("poll timeout");
             continue;
         }
 
-        al::span write_buf{mMixData};
-        mDevice->renderSamples(write_buf.data(), static_cast<uint>(write_buf.size()/frame_size),
-            frame_step);
+        auto write_buf = std::span{mMixData};
+        mDevice->renderSamples(write_buf.data(),
+            gsl::narrow_cast<u32>(write_buf.size()/frame_size), frame_step);
         while(!write_buf.empty() && !mKillNow.load(std::memory_order_acquire))
         {
-            ssize_t wrote{write(mFd, write_buf.data(), write_buf.size())};
+            const auto wrote = write(mFd, write_buf.data(), write_buf.size());
             if(wrote < 0)
             {
                 if(errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
                     continue;
                 const auto errstr = std::generic_category().message(errno);
-                ERR("write failed: %s\n", errstr.c_str());
-                mDevice->handleDisconnect("Failed writing playback samples: %s", errstr.c_str());
+                ERR("write failed: {}", errstr);
+                mDevice->handleDisconnect("Failed writing playback samples: {}", errstr);
                 break;
             }
 
-            write_buf = write_buf.subspan(static_cast<size_t>(wrote));
+            write_buf = write_buf.subspan(gsl::narrow_cast<usize>(wrote));
         }
     }
-
-    return 0;
 }
 
 
 void OSSPlayback::open(std::string_view name)
 {
-    const char *devname{DefaultPlayback.c_str()};
+    const auto *devname = DefaultPlayback.c_str();
     if(name.empty())
         name = GetDefaultName();
     else
@@ -346,20 +325,17 @@ void OSSPlayback::open(std::string_view name)
         if(PlaybackDevices.empty())
             ALCossListPopulate(PlaybackDevices, DSP_CAP_OUTPUT);
 
-        auto iter = std::find_if(PlaybackDevices.cbegin(), PlaybackDevices.cend(),
-            [&name](const DevMap &entry) -> bool
-            { return entry.name == name; }
-        );
-        if(iter == PlaybackDevices.cend())
+        const auto iter = std::ranges::find(PlaybackDevices, name, &DevMap::name);
+        if(iter == PlaybackDevices.end())
             throw al::backend_exception{al::backend_error::NoDevice,
-                "Device name \"%.*s\" not found", al::sizei(name), name.data()};
+                "Device name \"{}\" not found", name};
         devname = iter->device_name.c_str();
     }
 
-    int fd{::open(devname, O_WRONLY)};
+    const auto fd = ::open(devname, O_WRONLY); /* NOLINT(cppcoreguidelines-pro-type-vararg) */
     if(fd == -1)
-        throw al::backend_exception{al::backend_error::NoDevice, "Could not open %s: %s", devname,
-            std::generic_category().message(errno).c_str()};
+        throw al::backend_exception{al::backend_error::NoDevice, "Could not open {}: {}", devname,
+            std::generic_category().message(errno)};
 
     if(mFd != -1)
         ::close(mFd);
@@ -368,9 +344,9 @@ void OSSPlayback::open(std::string_view name)
     mDeviceName = name;
 }
 
-bool OSSPlayback::reset()
+auto OSSPlayback::reset() -> bool
 {
-    int ossFormat{};
+    auto ossFormat = int{};
     switch(mDevice->FmtType)
     {
         case DevFmtByte:
@@ -384,25 +360,27 @@ bool OSSPlayback::reset()
         case DevFmtUInt:
         case DevFmtFloat:
             mDevice->FmtType = DevFmtShort;
-            /* fall-through */
+            [[fallthrough]];
         case DevFmtShort:
             ossFormat = AFMT_S16_NE;
             break;
     }
 
-    uint periods{mDevice->BufferSize / mDevice->UpdateSize};
-    uint numChannels{mDevice->channelsFromFmt()};
-    uint ossSpeed{mDevice->Frequency};
-    uint frameSize{numChannels * mDevice->bytesFromFmt()};
-    /* According to the OSS spec, 16 bytes (log2(16)) is the minimum. */
-    uint log2FragmentSize{std::max(log2i(mDevice->UpdateSize*frameSize), 4u)};
-    uint numFragmentsLogSize{(periods << 16) | log2FragmentSize};
+    auto numChannels = mDevice->channelsFromFmt();
+    auto ossSpeed = mDevice->mSampleRate;
+    auto frameSize = numChannels * mDevice->bytesFromFmt();
+    /* Number of periods in the upper 16 bits. */
+    auto numFragmentsLogSize = ((mDevice->mBufferSize + mDevice->mUpdateSize/2)
+        / mDevice->mUpdateSize) << 16u;
+    /* According to the OSS spec, 16 bytes is the minimum period size. */
+    numFragmentsLogSize |= std::max(log2i(mDevice->mUpdateSize * frameSize), 4u);
 
-    audio_buf_info info{};
+    auto info = audio_buf_info{};
 #define CHECKERR(func) if((func) < 0)                                         \
-    throw al::backend_exception{al::backend_error::DeviceError, "%s failed: %s\n", #func, \
-        std::generic_category().message(errno).c_str()};
+    throw al::backend_exception{al::backend_error::DeviceError, #func " failed: {}", \
+        std::generic_category().message(errno)};
 
+    /* NOLINTBEGIN(cppcoreguidelines-pro-type-vararg) */
     /* Don't fail if SETFRAGMENT fails. We can handle just about anything
      * that's reported back via GETOSPACE */
     ioctl(mFd, SNDCTL_DSP_SETFRAGMENT, &numFragmentsLogSize);
@@ -410,11 +388,12 @@ bool OSSPlayback::reset()
     CHECKERR(ioctl(mFd, SNDCTL_DSP_CHANNELS, &numChannels));
     CHECKERR(ioctl(mFd, SNDCTL_DSP_SPEED, &ossSpeed));
     CHECKERR(ioctl(mFd, SNDCTL_DSP_GETOSPACE, &info));
+    /* NOLINTEND(cppcoreguidelines-pro-type-vararg) */
 #undef CHECKERR
 
     if(mDevice->channelsFromFmt() != numChannels)
     {
-        ERR("Failed to set %s, got %d channels instead\n", DevFmtChannelsString(mDevice->FmtChans),
+        ERR("Failed to set {}, got {} channels instead", DevFmtChannelsString(mDevice->FmtChans),
             numChannels);
         return false;
     }
@@ -423,18 +402,18 @@ bool OSSPlayback::reset()
          (ossFormat == AFMT_U8 && mDevice->FmtType == DevFmtUByte) ||
          (ossFormat == AFMT_S16_NE && mDevice->FmtType == DevFmtShort)))
     {
-        ERR("Failed to set %s samples, got OSS format %#x\n", DevFmtTypeString(mDevice->FmtType),
-            ossFormat);
+        ERR("Failed to set {} samples, got OSS format {:#x}", DevFmtTypeString(mDevice->FmtType),
+            as_unsigned(ossFormat));
         return false;
     }
 
-    mDevice->Frequency = ossSpeed;
-    mDevice->UpdateSize = static_cast<uint>(info.fragsize) / frameSize;
-    mDevice->BufferSize = static_cast<uint>(info.fragments) * mDevice->UpdateSize;
+    mDevice->mSampleRate = ossSpeed;
+    mDevice->mUpdateSize = gsl::narrow_cast<u32>(info.fragsize) / frameSize;
+    mDevice->mBufferSize = gsl::narrow_cast<u32>(info.fragments) * mDevice->mUpdateSize;
 
     setDefaultChannelOrder();
 
-    mMixData.resize(size_t{mDevice->UpdateSize} * mDevice->frameSizeFromFmt());
+    mMixData.resize(usize{mDevice->mUpdateSize} * mDevice->frameSizeFromFmt());
 
     return true;
 }
@@ -443,11 +422,11 @@ void OSSPlayback::start()
 {
     try {
         mKillNow.store(false, std::memory_order_release);
-        mThread = std::thread{std::mem_fn(&OSSPlayback::mixerProc), this};
+        mThread = std::thread{&OSSPlayback::mixerProc, this};
     }
     catch(std::exception& e) {
         throw al::backend_exception{al::backend_error::DeviceError,
-            "Failed to start mixing thread: %s", e.what()};
+            "Failed to start mixing thread: {}", e.what()};
     }
 }
 
@@ -457,26 +436,26 @@ void OSSPlayback::stop()
         return;
     mThread.join();
 
-    if(ioctl(mFd, SNDCTL_DSP_RESET) != 0)
-        ERR("Error resetting device: %s\n", std::generic_category().message(errno).c_str());
+    if(ioctl(mFd, SNDCTL_DSP_RESET) != 0) /* NOLINT(cppcoreguidelines-pro-type-vararg) */
+        ERR("Error resetting device: {}", std::generic_category().message(errno));
 }
 
 
 struct OSScapture final : public BackendBase {
-    OSScapture(DeviceBase *device) noexcept : BackendBase{device} { }
+    explicit OSScapture(gsl::not_null<DeviceBase*> device) noexcept : BackendBase{device} { }
     ~OSScapture() override;
 
-    int recordProc();
+    void recordProc() const;
 
     void open(std::string_view name) override;
     void start() override;
     void stop() override;
-    void captureSamples(std::byte *buffer, uint samples) override;
-    uint availableSamples() override;
+    void captureSamples(std::span<std::byte> outbuffer) override;
+    auto availableSamples() -> usize override;
 
     int mFd{-1};
 
-    RingBufferPtr mRing{nullptr};
+    RingBufferPtr<std::byte> mRing;
 
     std::atomic<bool> mKillNow{true};
     std::thread mThread;
@@ -490,55 +469,53 @@ OSScapture::~OSScapture()
 }
 
 
-int OSScapture::recordProc()
+void OSScapture::recordProc() const
 {
     SetRTPriority();
     althrd_setname(GetRecordThreadName());
 
-    const size_t frame_size{mDevice->frameSizeFromFmt()};
+    auto const frame_size = usize{mDevice->frameSizeFromFmt()};
     while(!mKillNow.load(std::memory_order_acquire))
     {
-        pollfd pollitem{};
+        auto pollitem = pollfd{};
         pollitem.fd = mFd;
         pollitem.events = POLLIN;
 
-        if(int pret{poll(&pollitem, 1, 1000)}; pret < 0)
+        if(auto const pret = poll(&pollitem, 1, 1000); pret < 0)
         {
             if(errno == EINTR || errno == EAGAIN)
                 continue;
-            const auto errstr = std::generic_category().message(errno);
-            ERR("poll failed: %s\n", errstr.c_str());
-            mDevice->handleDisconnect("Failed to check capture samples: %s", errstr.c_str());
+            auto const errstr = std::generic_category().message(errno);
+            ERR("poll failed: {}", errstr);
+            mDevice->handleDisconnect("Failed to check capture samples: {}", errstr);
             break;
         }
         else if(pret == 0) /* NOLINT(*-else-after-return) 'pret' is local to the if/else blocks */
         {
-            WARN("poll timeout\n");
+            WARN("poll timeout");
             continue;
         }
 
         auto vec = mRing->getWriteVector();
-        if(vec[0].len > 0)
+        if(!vec[0].empty())
         {
-            ssize_t amt{read(mFd, vec[0].buf, vec[0].len*frame_size)};
+            auto amt = read(mFd, vec[0].data(), vec[0].size());
             if(amt < 0)
             {
-                const auto errstr = std::generic_category().message(errno);
-                ERR("read failed: %s\n", errstr.c_str());
-                mDevice->handleDisconnect("Failed reading capture samples: %s", errstr.c_str());
+                auto const errstr = std::generic_category().message(errno);
+                ERR("read failed: {}", errstr);
+                mDevice->handleDisconnect("Failed reading capture samples: {}", errstr);
                 break;
             }
-            mRing->writeAdvance(static_cast<size_t>(amt)/frame_size);
+            mRing->writeAdvance(gsl::narrow_cast<usize>(amt) / frame_size);
         }
     }
-
-    return 0;
 }
 
 
 void OSScapture::open(std::string_view name)
 {
-    const char *devname{DefaultCapture.c_str()};
+    auto *devname = DefaultCapture.c_str();
     if(name.empty())
         name = GetDefaultName();
     else
@@ -546,22 +523,19 @@ void OSScapture::open(std::string_view name)
         if(CaptureDevices.empty())
             ALCossListPopulate(CaptureDevices, DSP_CAP_INPUT);
 
-        auto iter = std::find_if(CaptureDevices.cbegin(), CaptureDevices.cend(),
-            [&name](const DevMap &entry) -> bool
-            { return entry.name == name; }
-        );
-        if(iter == CaptureDevices.cend())
+        auto iter = std::ranges::find(CaptureDevices, name, &DevMap::name);
+        if(iter == CaptureDevices.end())
             throw al::backend_exception{al::backend_error::NoDevice,
-                "Device name \"%.*s\" not found", al::sizei(name), name.data()};
+                "Device name \"{}\" not found", name};
         devname = iter->device_name.c_str();
     }
 
-    mFd = ::open(devname, O_RDONLY);
+    mFd = ::open(devname, O_RDONLY); /* NOLINT(cppcoreguidelines-pro-type-vararg) */
     if(mFd == -1)
-        throw al::backend_exception{al::backend_error::NoDevice, "Could not open %s: %s", devname,
-            std::generic_category().message(errno).c_str()};
+        throw al::backend_exception{al::backend_error::NoDevice, "Could not open {}: {}", devname,
+            std::generic_category().message(errno)};
 
-    int ossFormat{};
+    auto ossFormat = int{};
     switch(mDevice->FmtType)
     {
     case DevFmtByte:
@@ -578,42 +552,44 @@ void OSScapture::open(std::string_view name)
     case DevFmtUInt:
     case DevFmtFloat:
         throw al::backend_exception{al::backend_error::DeviceError,
-            "%s capture samples not supported", DevFmtTypeString(mDevice->FmtType)};
+            "{} capture samples not supported", DevFmtTypeString(mDevice->FmtType)};
     }
 
-    uint periods{4};
-    uint numChannels{mDevice->channelsFromFmt()};
-    uint frameSize{numChannels * mDevice->bytesFromFmt()};
-    uint ossSpeed{mDevice->Frequency};
+    auto numChannels = mDevice->channelsFromFmt();
+    auto frameSize = numChannels * mDevice->bytesFromFmt();
+    auto ossSpeed = mDevice->mSampleRate;
     /* according to the OSS spec, 16 bytes are the minimum */
-    uint log2FragmentSize{std::max(log2i(mDevice->BufferSize * frameSize / periods), 4u)};
-    uint numFragmentsLogSize{(periods << 16) | log2FragmentSize};
+    constexpr auto periods = 4u;
+    const auto log2FragmentSize = std::max(log2i(mDevice->mBufferSize * frameSize / periods), 4u);
+    auto numFragmentsLogSize = (periods << 16) | log2FragmentSize;
 
-    audio_buf_info info{};
+    auto info = audio_buf_info{};
 #define CHECKERR(func) if((func) < 0) {                                       \
-    throw al::backend_exception{al::backend_error::DeviceError, #func " failed: %s", \
-        std::generic_category().message(errno).c_str()};                      \
+    throw al::backend_exception{al::backend_error::DeviceError, #func " failed: {}", \
+        std::generic_category().message(errno)};                              \
 }
+    /* NOLINTBEGIN(cppcoreguidelines-pro-type-vararg) */
     CHECKERR(ioctl(mFd, SNDCTL_DSP_SETFRAGMENT, &numFragmentsLogSize));
     CHECKERR(ioctl(mFd, SNDCTL_DSP_SETFMT, &ossFormat));
     CHECKERR(ioctl(mFd, SNDCTL_DSP_CHANNELS, &numChannels));
     CHECKERR(ioctl(mFd, SNDCTL_DSP_SPEED, &ossSpeed));
     CHECKERR(ioctl(mFd, SNDCTL_DSP_GETISPACE, &info));
+    /* NOLINTEND(cppcoreguidelines-pro-type-vararg) */
 #undef CHECKERR
 
     if(mDevice->channelsFromFmt() != numChannels)
         throw al::backend_exception{al::backend_error::DeviceError,
-            "Failed to set %s, got %d channels instead", DevFmtChannelsString(mDevice->FmtChans),
+            "Failed to set {}, got {} channels instead", DevFmtChannelsString(mDevice->FmtChans),
             numChannels};
 
     if(!((ossFormat == AFMT_S8 && mDevice->FmtType == DevFmtByte)
         || (ossFormat == AFMT_U8 && mDevice->FmtType == DevFmtUByte)
         || (ossFormat == AFMT_S16_NE && mDevice->FmtType == DevFmtShort)))
         throw al::backend_exception{al::backend_error::DeviceError,
-            "Failed to set %s samples, got OSS format %#x", DevFmtTypeString(mDevice->FmtType),
-            ossFormat};
+            "Failed to set {} samples, got OSS format {:#x}", DevFmtTypeString(mDevice->FmtType),
+            as_unsigned(ossFormat)};
 
-    mRing = RingBuffer::Create(mDevice->BufferSize, frameSize, false);
+    mRing = RingBuffer<std::byte>::Create(mDevice->mBufferSize, frameSize, false);
 
     mDeviceName = name;
 }
@@ -622,11 +598,11 @@ void OSScapture::start()
 {
     try {
         mKillNow.store(false, std::memory_order_release);
-        mThread = std::thread{std::mem_fn(&OSScapture::recordProc), this};
+        mThread = std::thread{&OSScapture::recordProc, this};
     }
     catch(std::exception& e) {
         throw al::backend_exception{al::backend_error::DeviceError,
-            "Failed to start recording thread: %s", e.what()};
+            "Failed to start recording thread: {}", e.what()};
     }
 }
 
@@ -636,26 +612,19 @@ void OSScapture::stop()
         return;
     mThread.join();
 
-    if(ioctl(mFd, SNDCTL_DSP_RESET) != 0)
-        ERR("Error resetting device: %s\n", std::generic_category().message(errno).c_str());
+    if(ioctl(mFd, SNDCTL_DSP_RESET) != 0) /* NOLINT(cppcoreguidelines-pro-type-vararg) */
+        ERR("Error resetting device: {}", std::generic_category().message(errno));
 }
 
-void OSScapture::captureSamples(std::byte *buffer, uint samples)
-{ std::ignore = mRing->read(buffer, samples); }
+void OSScapture::captureSamples(std::span<std::byte> outbuffer)
+{ std::ignore = mRing->read(outbuffer); }
 
-uint OSScapture::availableSamples()
-{ return static_cast<uint>(mRing->readSpace()); }
+auto OSScapture::availableSamples() -> usize
+{ return mRing->readSpace(); }
 
 } // namespace
 
-
-BackendFactory &OSSBackendFactory::getFactory()
-{
-    static OSSBackendFactory factory{};
-    return factory;
-}
-
-bool OSSBackendFactory::init()
+auto OSSBackendFactory::init() -> bool
 {
     if(auto devopt = ConfigValueStr({}, "oss", "device"))
         DefaultPlayback = std::move(*devopt);
@@ -665,12 +634,12 @@ bool OSSBackendFactory::init()
     return true;
 }
 
-bool OSSBackendFactory::querySupport(BackendType type)
+auto OSSBackendFactory::querySupport(BackendType const type) -> bool
 { return (type == BackendType::Playback || type == BackendType::Capture); }
 
-auto OSSBackendFactory::enumerate(BackendType type) -> std::vector<std::string>
+auto OSSBackendFactory::enumerate(BackendType const type) -> std::vector<std::string>
 {
-    std::vector<std::string> outnames;
+    auto outnames = std::vector<std::string>{};
     auto add_device = [&outnames](const DevMap &entry) -> void
     {
         if(struct stat buf{}; stat(entry.device_name.c_str(), &buf) == 0)
@@ -683,25 +652,32 @@ auto OSSBackendFactory::enumerate(BackendType type) -> std::vector<std::string>
         PlaybackDevices.clear();
         ALCossListPopulate(PlaybackDevices, DSP_CAP_OUTPUT);
         outnames.reserve(PlaybackDevices.size());
-        std::for_each(PlaybackDevices.cbegin(), PlaybackDevices.cend(), add_device);
+        std::ranges::for_each(PlaybackDevices, add_device);
         break;
 
     case BackendType::Capture:
         CaptureDevices.clear();
         ALCossListPopulate(CaptureDevices, DSP_CAP_INPUT);
         outnames.reserve(CaptureDevices.size());
-        std::for_each(CaptureDevices.cbegin(), CaptureDevices.cend(), add_device);
+        std::ranges::for_each(CaptureDevices, add_device);
         break;
     }
 
     return outnames;
 }
 
-BackendPtr OSSBackendFactory::createBackend(DeviceBase *device, BackendType type)
+auto OSSBackendFactory::createBackend(gsl::not_null<DeviceBase*> const device,
+    BackendType const type) -> BackendPtr
 {
     if(type == BackendType::Playback)
         return BackendPtr{new OSSPlayback{device}};
     if(type == BackendType::Capture)
         return BackendPtr{new OSScapture{device}};
     return nullptr;
+}
+
+auto OSSBackendFactory::getFactory() -> BackendFactory&
+{
+    static OSSBackendFactory factory{};
+    return factory;
 }

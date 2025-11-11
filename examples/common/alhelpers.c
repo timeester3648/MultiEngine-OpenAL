@@ -162,7 +162,6 @@ const char *FormatName(ALenum format)
 
 #ifdef _WIN32
 
-#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
 
@@ -218,7 +217,8 @@ int altime_get(void)
 
 void al_nssleep(unsigned long nsec)
 {
-    struct timespec ts, rem;
+    struct timespec ts;
+    struct timespec rem;
     ts.tv_sec = (time_t)(nsec / 1000000000ul);
     ts.tv_nsec = (long)(nsec % 1000000000ul);
     while(nanosleep(&ts, &rem) == -1 && errno == EINTR)

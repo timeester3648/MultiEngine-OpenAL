@@ -67,14 +67,22 @@ jobs:
           }
         - {
             name: "macOS-Release",
-            os: macos-latest,
+            os: macos-15,
             cmake_opts: "-DALSOFT_REQUIRE_COREAUDIO=ON \
               -DALSOFT_TESTS=ON",
             build_type: "Release"
           }
         - {
+            name: "macOS-10.9-Release",
+            os: macos-15,
+            cmake_opts: "-DCMAKE_OSX_DEPLOYMENT_TARGET=10.9 \
+              -DALSOFT_REQUIRE_COREAUDIO=ON \
+              -DALSOFT_TESTS=ON",
+            build_type: "Release"
+          }
+        - {
             name: "iOS-Release",
-            os: macos-latest,
+            os: macos-15,
             cmake_opts: "-GXcode \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DALSOFT_REQUIRE_COREAUDIO=ON \
@@ -102,7 +110,7 @@ jobs:
               libasound2-dev \
               libjack-dev \
               libpipewire-0.3-dev \
-              qtbase5-dev \
+              qt6-base-dev \
               libdbus-1-dev",
             build_type: "Release"
           }
@@ -111,23 +119,31 @@ jobs:
             os: ubuntu-latest,
             cmake_opts: "-DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DALSOFT_EMBED_HRTF_DATA=TRUE \
-            -DALSOFT_REQUIRE_OPENSL=ON",
+            -DALSOFT_REQUIRE_OPENSL=ON \
+            -DALSOFT_REQUIRE_OBOE=ON \
+            -DOBOE_SOURCE=oboe",
             build_type: "Release"
           }
         - {
             name: "Android_arm64-v8a-Release",
             os: ubuntu-latest,
-            cmake_opts: "-DANDRIOD_ABI=arm64-v8a \
+            cmake_opts: "-DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=25 \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DALSOFT_EMBED_HRTF_DATA=TRUE \
-            -DALSOFT_REQUIRE_OPENSL=ON",
+            -DALSOFT_REQUIRE_OPENSL=ON \
+            -DALSOFT_REQUIRE_OBOE=ON \
+            -DOBOE_SOURCE=oboe",
             build_type: "Release"
           }
     steps:
     - uses: actions/checkout@v4
       with:
         fetch-depth: '0'
+
+    - name: Setup Oboe for Android
+      if: ${{ contains(matrix.config.name, 'Android') }}
+      run: git clone https://github.com/google/oboe --depth=1 --branch 1.10.0
 
     - name: Get current commit tag, short hash, count and date
       run: |
@@ -191,6 +207,7 @@ jobs:
       CommitDate: ${{env.CommitDate}}
 
   release:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -215,6 +232,7 @@ jobs:
         curl https://raw.githubusercontent.com/${{github.repository}}/${{github.ref_name}}/ChangeLog               -o "build/release/OpenALSoft/Documentation/ChangeLog.txt"
         curl https://raw.githubusercontent.com/${{github.repository}}/${{github.ref_name}}/COPYING                 -o "build/release/OpenALSoft/Documentation/License.txt"
         curl https://raw.githubusercontent.com/${{github.repository}}/${{github.ref_name}}/BSD-3Clause             -o "build/release/OpenALSoft/Documentation/License_BSD-3Clause.txt"
+        curl https://raw.githubusercontent.com/${{github.repository}}/${{github.ref_name}}/LICENSE-pffft           -o "build/release/OpenALSoft/Documentation/License_PFFFT.txt"
         curl https://raw.githubusercontent.com/${{github.repository}}/${{github.ref_name}}/alsoftrc.sample         -o "build/release/OpenALSoft/Win32/alsoft.ini"
         curl https://raw.githubusercontent.com/${{github.repository}}/${{github.ref_name}}/alsoftrc.sample         -o "build/release/OpenALSoft/Win64/alsoft.ini"
         cp "build/soft_oal-Win32-Release/soft_oal.dll"                                                                "build/release/OpenALSoft/Win32/OpenAL32.dll"

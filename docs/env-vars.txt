@@ -50,6 +50,10 @@ easier to track the cause.
 ALSOFT_TRAP_ERROR
 Set to "true" or "1" to force trapping both ALC and AL errors.
 
+ALSOFT_EAX_TRACE_COMMITS
+Overrides the EAX trace-commits config option. This specifies whether EAX
+property commits are logged with trace messages.
+
 *** Compatibility ***
 
 __ALSOFT_HALF_ANGLE_CONES
@@ -69,7 +73,7 @@ Applications that don't natively use OpenAL's coordinate system have to convert
 to it before passing in 3D coordinates. Depending on how exactly this is done,
 it can cause correct output for stereo but incorrect Z panning for surround
 sound (i.e., sounds that are supposed to be behind you sound like they're in
-front, and vice-versa). Setting this to "true" or "1" will negate the localized
+front, and vice versa). Setting this to "true" or "1" will negate the localized
 Z coordinate to flip front/back panning for 3D sources.
 
 __ALSOFT_REVERSE_Y

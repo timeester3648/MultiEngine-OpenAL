@@ -1,13 +1,28 @@
 #ifndef AL_DYNLOAD_H
 #define AL_DYNLOAD_H
 
+#include "config.h"
+
 #if defined(_WIN32) || defined(HAVE_DLFCN_H)
 
-#define HAVE_DYNLOAD
+#include <string>
 
-void *LoadLib(const char *name);
+#include "expected.hpp"
+#include "gsl/gsl"
+
+#define HAVE_DYNLOAD 1
+
+#include "dlopennote.h"
+
+[[nodiscard]]
+auto LoadLib(gsl::czstring name) -> al::expected<void*, std::string>;
 void CloseLib(void *handle);
-void *GetSymbol(void *handle, const char *name);
+[[nodiscard]]
+auto GetSymbol(void *handle, gsl::czstring name) -> al::expected<void*, std::string>;
+
+#else
+
+#define HAVE_DYNLOAD 0
 
 #endif
 

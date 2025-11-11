@@ -5,12 +5,14 @@
 #include <cstdint>
 #include <optional>
 
-struct ALCcontext;
-struct ALCdevice;
-struct EffectSlot;
+struct EffectSlotBase;
 
 enum class StereoEncoding : std::uint8_t;
 
+namespace al {
+struct Context;
+struct Device;
+} // namespace al
 
 constexpr float GainMixMax{1000.0f}; /* +60dB */
 
@@ -31,8 +33,8 @@ void aluInit(CompatFlagBitset flags, const float nfcscale);
  * Set up the appropriate panning method and mixing method given the device
  * properties.
  */
-void aluInitRenderer(ALCdevice *device, int hrtf_id, std::optional<StereoEncoding> stereomode);
+void aluInitRenderer(al::Device *device, int hrtf_id, std::optional<StereoEncoding> stereomode);
 
-void aluInitEffectPanning(EffectSlot *slot, ALCcontext *context);
+void aluInitEffectPanning(EffectSlotBase *slot, al::Context *context);
 
 #endif

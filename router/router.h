@@ -1,12 +1,10 @@
 #ifndef ROUTER_ROUTER_H
 #define ROUTER_ROUTER_H
 
-#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <winnt.h>
 
 #include <atomic>
-#include <cstdio>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -17,10 +15,12 @@
 #include "AL/al.h"
 #include "AL/alext.h"
 
-#include "almalloc.h"
+#include "fmt/base.h"
+#include "fmt/ostream.h"
 
 
-#define MAKE_ALC_VER(major, minor) (((major)<<8) | (minor))
+constexpr auto MakeALCVer(int const major, int const minor) noexcept -> int
+{ return (major<<8) | minor; }
 
 struct DriverIface {
     LPALCCREATECONTEXT alcCreateContext{nullptr};
@@ -46,6 +46,10 @@ struct DriverIface {
 
     PFNALCSETTHREADCONTEXTPROC alcSetThreadContext{nullptr};
     PFNALCGETTHREADCONTEXTPROC alcGetThreadContext{nullptr};
+
+    LPALCLOOPBACKOPENDEVICESOFT alcLoopbackOpenDeviceSOFT{nullptr};
+    LPALCISRENDERFORMATSUPPORTEDSOFT alcIsRenderFormatSupportedSOFT{nullptr};
+    LPALCRENDERSAMPLESSOFT alcRenderSamplesSOFT{nullptr};
 
     LPALENABLE alEnable{nullptr};
     LPALDISABLE alDisable{nullptr};
@@ -156,13 +160,13 @@ struct DriverIface {
     LPALGETAUXILIARYEFFECTSLOTI alGetAuxiliaryEffectSloti{nullptr};
     LPALGETAUXILIARYEFFECTSLOTIV alGetAuxiliaryEffectSlotiv{nullptr};
 
-    std::wstring Name;
-    HMODULE Module{nullptr};
+    std::wstring const Name;
+    HMODULE const Module{nullptr};
     int ALCVer{0};
-    std::once_flag InitOnceCtx{};
+    std::once_flag InitOnceCtx;
 
     template<typename T>
-    DriverIface(T&& name, HMODULE mod) : Name(std::forward<T>(name)), Module(mod) { }
+    DriverIface(T&& name, HMODULE const mod) : Name(std::forward<T>(name)), Module(mod) { }
     ~DriverIface() { if(Module) FreeLibrary(Module); }
 
     DriverIface(const DriverIface&) = delete;
@@ -171,14 +175,15 @@ struct DriverIface {
     DriverIface& operator=(DriverIface&&) = delete;
 };
 using DriverIfacePtr = std::unique_ptr<DriverIface>;
+using LPCDriverIface = DriverIface const*;
 
-inline std::vector<DriverIfacePtr> DriverList;
+inline auto DriverList = std::vector<DriverIfacePtr>{};
 
-inline thread_local DriverIface *ThreadCtxDriver{};
-inline std::atomic<DriverIface*> CurrentCtxDriver{};
+inline thread_local auto ThreadCtxDriver = LPCDriverIface{};
+inline auto CurrentCtxDriver = std::atomic<LPCDriverIface>{};
 
-inline DriverIface *GetThreadDriver() noexcept { return ThreadCtxDriver; }
-inline void SetThreadDriver(DriverIface *driver) noexcept { ThreadCtxDriver = driver; }
+inline auto GetThreadDriver() noexcept -> LPCDriverIface { return ThreadCtxDriver; }
+inline void SetThreadDriver(LPCDriverIface const driver) noexcept { ThreadCtxDriver = driver; }
 
 
 enum class eLogLevel {
@@ -187,32 +192,45 @@ enum class eLogLevel {
     Warn  = 2,
     Trace = 3,
 };
-extern eLogLevel LogLevel;
-extern gsl::owner<std::FILE*> LogFile;
+inline auto LogLevel = eLogLevel::Error;
+inline auto LogFile = std::ofstream{}; /* NOLINT(cert-err58-cpp) */
 
-#define TRACE(...) do {                                   \
-    if(LogLevel >= eLogLevel::Trace)                      \
-    {                                                     \
-        std::FILE *file{LogFile ? LogFile : stderr};      \
-        fprintf(file, "AL Router (II): " __VA_ARGS__);    \
-        fflush(file);                                     \
-    }                                                     \
-} while(0)
-#define WARN(...) do {                                    \
-    if(LogLevel >= eLogLevel::Warn)                       \
-    {                                                     \
-        std::FILE *file{LogFile ? LogFile : stderr};      \
-        fprintf(file, "AL Router (WW): " __VA_ARGS__);    \
-        fflush(file);                                     \
-    }                                                     \
-} while(0)
-#define ERR(...) do {                                     \
-    if(LogLevel >= eLogLevel::Error)                      \
-    {                                                     \
-        std::FILE *file{LogFile ? LogFile : stderr};      \
-        fprintf(file, "AL Router (EE): " __VA_ARGS__);    \
-        fflush(file);                                     \
-    }                                                     \
-} while(0)
+template<typename ...Args>
+void TRACE(fmt::format_string<Args...> const fmt, Args&& ...args)
+{
+    if(LogLevel >= eLogLevel::Trace)
+    {
+        auto &file = LogFile ? LogFile : std::cerr;
+        auto msg = fmt::vformat(fmt, fmt::make_format_args(args...));
+        fmt::vprint(file, "AL Router (II): {}\n", fmt::make_format_args(msg));
+        file.flush();
+    }
+}
+
+template<typename ...Args>
+void WARN(fmt::format_string<Args...> const fmt, Args&& ...args)
+{
+    if(LogLevel >= eLogLevel::Warn)
+    {
+        auto &file = LogFile ? LogFile : std::cerr;
+        auto msg = fmt::vformat(fmt, fmt::make_format_args(args...));
+        fmt::vprint(file, "AL Router (WW): {}\n", fmt::make_format_args(msg));
+        file.flush();
+    }
+}
+
+template<typename ...Args>
+void ERR(fmt::format_string<Args...> const fmt, Args&& ...args)
+{
+    if(LogLevel >= eLogLevel::Error)
+    {
+        auto &file = LogFile ? LogFile : std::cerr;
+        auto msg = fmt::vformat(fmt, fmt::make_format_args(args...));
+        fmt::vprint(file, "AL Router (EE): {}\n", fmt::make_format_args(msg));
+        file.flush();
+    }
+}
+
+void LoadDriverList();
 
 #endif /* ROUTER_ROUTER_H */

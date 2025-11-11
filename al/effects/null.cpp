@@ -4,10 +4,11 @@
 #include "AL/al.h"
 #include "AL/efx.h"
 
-#include "alc/effects/base.h"
+#include "alc/context.h"
+#include "alnumeric.h"
 #include "effects.h"
 
-#ifdef ALSOFT_EAX
+#if ALSOFT_EAX
 #include "al/eax/effect.h"
 #include "al/eax/exception.h"
 #endif // ALSOFT_EAX
@@ -15,107 +16,72 @@
 
 namespace {
 
-constexpr EffectProps genDefaultProps() noexcept
+consteval auto genDefaultProps() noexcept -> EffectProps
 {
     return std::monostate{};
 }
 
 } // namespace
 
-const EffectProps NullEffectProps{genDefaultProps()};
+constinit const EffectProps NullEffectProps(genDefaultProps());
 
-void NullEffectHandler::SetParami(std::monostate& /*props*/, ALenum param, int /*val*/)
+void NullEffectHandler::SetParami(al::Context *context, std::monostate& /*props*/, ALenum param, int /*val*/)
 {
-    switch(param)
-    {
-    default:
-        throw effect_exception{AL_INVALID_ENUM, "Invalid null effect integer property 0x%04x",
-            param};
-    }
+    context->throw_error(AL_INVALID_ENUM, "Invalid null effect integer property {:#04x}",
+        as_unsigned(param));
 }
-void NullEffectHandler::SetParamiv(std::monostate &props, ALenum param, const int *vals)
+void NullEffectHandler::SetParamiv(al::Context *context, std::monostate &props, ALenum param, const int *vals)
 {
-    switch(param)
-    {
-    default:
-        SetParami(props, param, *vals);
-    }
+    SetParami(context, props, param, *vals);
 }
-void NullEffectHandler::SetParamf(std::monostate& /*props*/, ALenum param, float /*val*/)
+void NullEffectHandler::SetParamf(al::Context *context, std::monostate& /*props*/, ALenum param, float /*val*/)
 {
-    switch(param)
-    {
-    default:
-        throw effect_exception{AL_INVALID_ENUM, "Invalid null effect float property 0x%04x",
-            param};
-    }
+    context->throw_error(AL_INVALID_ENUM, "Invalid null effect float property {:#04x}",
+        as_unsigned(param));
 }
-void NullEffectHandler::SetParamfv(std::monostate &props, ALenum param, const float *vals)
+void NullEffectHandler::SetParamfv(al::Context *context, std::monostate &props, ALenum param, const float *vals)
 {
-    switch(param)
-    {
-    default:
-        SetParamf(props, param, *vals);
-    }
+    SetParamf(context, props, param, *vals);
 }
 
-void NullEffectHandler::GetParami(const std::monostate& /*props*/, ALenum param, int* /*val*/)
+void NullEffectHandler::GetParami(al::Context *context, const std::monostate& /*props*/, ALenum param, int* /*val*/)
 {
-    switch(param)
-    {
-    default:
-        throw effect_exception{AL_INVALID_ENUM, "Invalid null effect integer property 0x%04x",
-            param};
-    }
+    context->throw_error(AL_INVALID_ENUM, "Invalid null effect integer property {:#04x}",
+        as_unsigned(param));
 }
-void NullEffectHandler::GetParamiv(const std::monostate &props, ALenum param, int *vals)
+void NullEffectHandler::GetParamiv(al::Context *context, const std::monostate &props, ALenum param, int *vals)
 {
-    switch(param)
-    {
-    default:
-        GetParami(props, param, vals);
-    }
+    GetParami(context, props, param, vals);
 }
-void NullEffectHandler::GetParamf(const std::monostate& /*props*/, ALenum param, float* /*val*/)
+void NullEffectHandler::GetParamf(al::Context *context, const std::monostate& /*props*/, ALenum param, float* /*val*/)
 {
-    switch(param)
-    {
-    default:
-        throw effect_exception{AL_INVALID_ENUM, "Invalid null effect float property 0x%04x",
-            param};
-    }
+    context->throw_error(AL_INVALID_ENUM, "Invalid null effect float property {:#04x}",
+        as_unsigned(param));
 }
-void NullEffectHandler::GetParamfv(const std::monostate &props, ALenum param, float *vals)
+void NullEffectHandler::GetParamfv(al::Context *context, const std::monostate &props, ALenum param, float *vals)
 {
-    switch(param)
-    {
-    default:
-        GetParamf(props, param, vals);
-    }
+    GetParamf(context, props, param, vals);
 }
 
 
-#ifdef ALSOFT_EAX
+#if ALSOFT_EAX
 namespace {
 
 using NullCommitter = EaxCommitter<EaxNullCommitter>;
 
 } // namespace
 
-template<>
-struct NullCommitter::Exception : public EaxException
-{
-    explicit Exception(const char *message) : EaxException{"EAX_NULL_EFFECT", message}
+template<> /* NOLINTNEXTLINE(clazy-copyable-polymorphic) Exceptions must be copyable. */
+struct NullCommitter::Exception final : EaxException {
+    explicit Exception(const std::string_view message) : EaxException{"EAX_NULL_EFFECT", message}
     { }
 };
 
-template<>
-[[noreturn]] void NullCommitter::fail(const char *message)
-{
-    throw Exception{message};
-}
+template<> [[noreturn]]
+void NullCommitter::fail(const std::string_view message)
+{ throw Exception{message}; }
 
-bool EaxNullCommitter::commit(const std::monostate &props)
+auto EaxNullCommitter::commit(const std::monostate &props) const -> bool
 {
     const bool ret{std::holds_alternative<std::monostate>(mEaxProps)};
     mEaxProps = props;

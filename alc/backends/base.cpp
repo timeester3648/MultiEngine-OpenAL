@@ -3,43 +3,37 @@
 
 #include "base.h"
 
-#include <algorithm>
 #include <array>
 #include <atomic>
+#include <utility>
 
+#include "alformat.hpp"
 #include "core/devformat.h"
 
 
 namespace al {
 
-backend_exception::backend_exception(backend_error code, const char *msg, ...) : mErrorCode{code}
-{
-    /* NOLINTBEGIN(*-array-to-pointer-decay) */
-    std::va_list args;
-    va_start(args, msg);
-    setMessage(msg, args);
-    va_end(args);
-    /* NOLINTEND(*-array-to-pointer-decay) */
-}
-backend_exception::~backend_exception() = default;
+auto backend_exception::make_string(al::string_view const fmt, al::format_args args)
+    -> std::string
+{ return al::vformat(fmt, std::move(args)); }
 
 } // namespace al
 
 
-bool BackendBase::reset()
+auto BackendBase::reset() -> bool
 { throw al::backend_exception{al::backend_error::DeviceError, "Invalid BackendBase call"}; }
 
-void BackendBase::captureSamples(std::byte*, uint)
+void BackendBase::captureSamples(std::span<std::byte> outbuffer [[maybe_unused]])
 { }
 
-uint BackendBase::availableSamples()
-{ return 0; }
+auto BackendBase::availableSamples() -> usize
+{ return 0_uz; }
 
-ClockLatency BackendBase::getClockLatency()
+auto BackendBase::getClockLatency() -> ClockLatency
 {
-    ClockLatency ret{};
+    auto ret = ClockLatency{};
 
-    uint refcount;
+    auto refcount = u32{};
     do {
         refcount = mDevice->waitForMix();
         ret.ClockTime = mDevice->getClockTime();
@@ -50,8 +44,8 @@ ClockLatency BackendBase::getClockLatency()
      * any given time during playback. Without a more accurate measurement from
      * the output, this is an okay approximation.
      */
-    ret.Latency = std::chrono::seconds{mDevice->BufferSize - mDevice->UpdateSize};
-    ret.Latency /= mDevice->Frequency;
+    ret.Latency = std::chrono::seconds{mDevice->mBufferSize - mDevice->mUpdateSize};
+    ret.Latency /= mDevice->mSampleRate;
 
     return ret;
 }

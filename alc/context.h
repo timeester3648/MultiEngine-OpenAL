@@ -1,14 +1,18 @@
 #ifndef ALC_CONTEXT_H
 #define ALC_CONTEXT_H
 
+#include "config.h"
+
 #include <atomic>
 #include <bitset>
-#include <cstdint>
+#include <concepts>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -18,12 +22,15 @@
 #include "AL/alext.h"
 
 #include "al/listener.h"
+#include "alformat.hpp"
+#include "alnumeric.h"
 #include "althreads.h"
 #include "core/context.h"
+#include "gsl/gsl"
 #include "intrusive_ptr.h"
 #include "opthelpers.h"
 
-#ifdef ALSOFT_EAX
+#if ALSOFT_EAX
 #include "al/eax/api.h"
 #include "al/eax/exception.h"
 #include "al/eax/fx_slot_index.h"
@@ -33,35 +40,36 @@
 class EaxCall;
 #endif // ALSOFT_EAX
 
-struct ALeffect;
-struct ALeffectslot;
+namespace al {
+struct Effect;
+struct EffectSlot;
+}
 struct DebugGroup;
 struct EffectSlotSubList;
 struct SourceSubList;
 
-enum class DebugSource : std::uint8_t;
-enum class DebugType : std::uint8_t;
-enum class DebugSeverity : std::uint8_t;
-
-using uint = unsigned int;
+enum class DebugSource : u8;
+enum class DebugType : u8;
+enum class DebugSeverity : u8;
 
 
 enum ContextFlags {
     DebugBit = 0, /* ALC_CONTEXT_DEBUG_BIT_EXT */
 };
-using ContextFlagBitset = std::bitset<sizeof(ALuint)*8>;
+using ContextFlagBitset = std::bitset<sizeof(u32)*8>;
 
 
 struct DebugLogEntry {
-    const DebugSource mSource;
-    const DebugType mType;
-    const DebugSeverity mSeverity;
-    const uint mId;
+    DebugSource const mSource;
+    DebugType const mType;
+    DebugSeverity const mSeverity;
+    u32 const mId;
 
     std::string mMessage;
 
     template<typename T>
-    DebugLogEntry(DebugSource source, DebugType type, uint id, DebugSeverity severity, T&& message)
+    DebugLogEntry(DebugSource const source, DebugType const type, u32 const id,
+        DebugSeverity const severity, T&& message)
         : mSource{source}, mType{type}, mSeverity{severity}, mId{id}
         , mMessage{std::forward<T>(message)}
     { }
@@ -70,16 +78,22 @@ struct DebugLogEntry {
 };
 
 
-struct ALCcontext final : public al::intrusive_ref<ALCcontext>, ContextBase {
-    const al::intrusive_ptr<ALCdevice> mALDevice;
+struct ALCcontext { };
 
+namespace al {
+struct Device;
+struct Context;
+
+struct ContextDeleter { void operator()(gsl::owner<Context*> context) const noexcept; };
+struct Context final : ALCcontext, intrusive_ref<Context,ContextDeleter>, ContextBase {
+    gsl::not_null<intrusive_ptr<Device>> const mALDevice;
 
     bool mPropsDirty{true};
     bool mDeferUpdates{false};
 
     std::mutex mPropLock;
 
-    al::tss<ALenum> mLastThreadError{AL_NO_ERROR};
+    tss<ALenum> mLastThreadError{AL_NO_ERROR};
 
     const ContextFlagBitset mContextFlags;
     std::atomic<bool> mDebugEnabled{false};
@@ -87,10 +101,10 @@ struct ALCcontext final : public al::intrusive_ref<ALCcontext>, ContextBase {
     DistanceModel mDistanceModel{DistanceModel::Default};
     bool mSourceDistanceModel{false};
 
-    float mDopplerFactor{1.0f};
-    float mDopplerVelocity{1.0f};
-    float mSpeedOfSound{SpeedOfSoundMetersPerSec};
-    float mAirAbsorptionGainHF{AirAbsorbGainHF};
+    f32 mDopplerFactor{1.0f};
+    f32 mDopplerVelocity{1.0f};
+    f32 mSpeedOfSound{SpeedOfSoundMetersPerSec};
+    f32 mAirAbsorptionGainHF{AirAbsorbGainHF};
 
     std::mutex mEventCbLock;
     ALEVENTPROCSOFT mEventCb{};
@@ -102,35 +116,28 @@ struct ALCcontext final : public al::intrusive_ref<ALCcontext>, ContextBase {
     std::vector<DebugGroup> mDebugGroups;
     std::deque<DebugLogEntry> mDebugLog;
 
-    ALlistener mListener{};
+    Listener mListener{};
 
     std::vector<SourceSubList> mSourceList;
-    ALuint mNumSources{0};
+    u32 mNumSources{0_u32};
     std::mutex mSourceLock;
 
     std::vector<EffectSlotSubList> mEffectSlotList;
-    ALuint mNumEffectSlots{0u};
+    u32 mNumEffectSlots{0_u32};
     std::mutex mEffectSlotLock;
 
     /* Default effect slot */
-    std::unique_ptr<ALeffectslot> mDefaultSlot;
+    std::unique_ptr<EffectSlot> mDefaultSlot;
 
     std::vector<std::string_view> mExtensions;
-    std::string mExtensionsString{};
+    std::string mExtensionsString;
 
-    std::unordered_map<ALuint,std::string> mSourceNames;
-    std::unordered_map<ALuint,std::string> mEffectSlotNames;
+    std::unordered_map<u32, std::string> mSourceNames;
+    std::unordered_map<u32, std::string> mEffectSlotNames;
 
-    ALCcontext(al::intrusive_ptr<ALCdevice> device, ContextFlagBitset flags);
-    ALCcontext(const ALCcontext&) = delete;
-    ALCcontext& operator=(const ALCcontext&) = delete;
-    ~ALCcontext() final;
-
-    void init();
     /**
-     * Removes the context from its device and removes it from being current on
-     * the running thread or globally. Stops device playback if this was the
-     * last context on its device.
+     * Removes the context from being current on the running thread or
+     * globally, and stops the event thread.
      */
     void deinit();
 
@@ -157,38 +164,58 @@ struct ALCcontext final : public al::intrusive_ref<ALCcontext>, ContextBase {
      */
     void applyAllUpdates();
 
-#ifdef __MINGW32__
-    [[gnu::format(__MINGW_PRINTF_FORMAT, 3, 4)]]
-#else
-    [[gnu::format(printf, 3, 4)]]
-#endif
-    void setError(ALenum errorCode, const char *msg, ...);
+    void setErrorImpl(ALenum errorCode, al::string_view fmt, al::format_args args);
+
+    template<typename ...Args>
+    void setError(ALenum const errorCode, al::format_string<Args...> const msg, Args&& ...args)
+    { setErrorImpl(errorCode, msg.get(), al::make_format_args(args...)); }
+
+    [[noreturn]]
+    void throw_error_impl(ALenum errorCode, al::string_view fmt, al::format_args args);
+
+    template<typename ...Args> [[noreturn]]
+    void throw_error(ALenum const errorCode, al::format_string<Args...> const fmt, Args&&... args)
+    { throw_error_impl(errorCode, fmt.get(), al::make_format_args(args...)); }
 
     void sendDebugMessage(std::unique_lock<std::mutex> &debuglock, DebugSource source,
         DebugType type, ALuint id, DebugSeverity severity, std::string_view message);
 
-    void debugMessage(DebugSource source, DebugType type, ALuint id, DebugSeverity severity,
-        std::string_view message)
+    void debugMessage(DebugSource const source, DebugType const type, u32 const id,
+        DebugSeverity const severity, std::string_view const message)
     {
-        if(!mDebugEnabled.load(std::memory_order_relaxed)) LIKELY
+        if(!mDebugEnabled.load(std::memory_order_relaxed)) [[likely]]
             return;
-        std::unique_lock<std::mutex> debuglock{mDebugCbLock};
+        auto debuglock = std::unique_lock{mDebugCbLock};
         sendDebugMessage(debuglock, source, type, id, severity, message);
     }
 
+    static auto Create(const gsl::not_null<intrusive_ptr<Device>> &device, ContextFlagBitset flags)
+        -> intrusive_ptr<Context>;
+
     /* Process-wide current context */
     static std::atomic<bool> sGlobalContextLock;
-    static std::atomic<ALCcontext*> sGlobalContext;
+    static std::atomic<Context*> sGlobalContext;
+
+protected:
+    ~Context();
 
 private:
+    Context(const gsl::not_null<intrusive_ptr<Device>> &device, ContextFlagBitset flags);
+
+    void init();
+
     /* Thread-local current context. */
-    static inline thread_local ALCcontext *sLocalContext{};
+    static inline thread_local Context *sLocalContext{};
 
     /* Thread-local context handling. This handles attempting to release the
      * context which may have been left current when the thread is destroyed.
      */
     class ThreadCtx {
     public:
+        ThreadCtx() = default;
+        ThreadCtx(const ThreadCtx&) = delete;
+        auto operator=(const ThreadCtx&) -> ThreadCtx& = delete;
+
         ~ThreadCtx();
         /* NOLINTBEGIN(readability-convert-member-functions-to-static)
          * This should be non-static to invoke construction of the thread-local
@@ -196,64 +223,61 @@ private:
          * clear sLocalContext (which isn't a member variable to make read
          * access efficient).
          */
-        void set(ALCcontext *ctx) const noexcept { sLocalContext = ctx; }
+        void set(Context *ctx) const noexcept { sLocalContext = ctx; }
         /* NOLINTEND(readability-convert-member-functions-to-static) */
     };
     static thread_local ThreadCtx sThreadContext;
 
+    friend ContextDeleter;
+
 public:
-    static ALCcontext *getThreadContext() noexcept { return sLocalContext; }
-    static void setThreadContext(ALCcontext *context) noexcept { sThreadContext.set(context); }
+    static Context *getThreadContext() noexcept { return sLocalContext; }
+    static void setThreadContext(Context *context) noexcept { sThreadContext.set(context); }
 
     /* Default effect that applies to sources that don't have an effect on send 0. */
-    static ALeffect sDefaultEffect;
+    static Effect sDefaultEffect;
 
-#ifdef ALSOFT_EAX
+#if ALSOFT_EAX
     bool hasEax() const noexcept { return mEaxIsInitialized; }
     bool eaxIsCapable() const noexcept;
 
     void eaxUninitialize() noexcept;
 
-    ALenum eax_eax_set(
-        const GUID* property_set_id,
-        ALuint property_id,
-        ALuint property_source_id,
-        ALvoid* property_value,
-        ALuint property_value_size);
+    ALenum eax_eax_set(const GUID *property_set_id, ALuint property_id, ALuint property_source_id,
+        ALvoid *property_value, ALuint property_value_size);
 
-    ALenum eax_eax_get(
-        const GUID* property_set_id,
-        ALuint property_id,
-        ALuint property_source_id,
-        ALvoid* property_value,
-        ALuint property_value_size);
+    ALenum eax_eax_get(const GUID *property_set_id, ALuint property_id, ALuint property_source_id,
+        ALvoid *property_value, ALuint property_value_size);
 
     void eaxSetLastError() noexcept;
 
     [[nodiscard]]
-    auto eaxGetDistanceFactor() const noexcept -> float { return mEax.flDistanceFactor; }
+    auto eaxGetDistanceFactor() const noexcept -> f32 { return mEax.flDistanceFactor; }
 
     [[nodiscard]]
     auto eaxGetPrimaryFxSlotIndex() const noexcept -> EaxFxSlotIndex
     { return mEaxPrimaryFxSlotIndex; }
 
-    const ALeffectslot& eaxGetFxSlot(EaxFxSlotIndexValue fx_slot_index) const
+    auto eaxGetFxSlot(EaxFxSlotIndexValue const fx_slot_index) const LIFETIMEBOUND
+        -> EffectSlot const&
     { return mEaxFxSlots.get(fx_slot_index); }
-    ALeffectslot& eaxGetFxSlot(EaxFxSlotIndexValue fx_slot_index)
+    auto eaxGetFxSlot(EaxFxSlotIndexValue const fx_slot_index) LIFETIMEBOUND -> EffectSlot&
     { return mEaxFxSlots.get(fx_slot_index); }
 
-    bool eaxNeedsCommit() const noexcept { return mEaxNeedsCommit; }
+    auto eaxNeedsCommit() const noexcept -> bool { return mEaxNeedsCommit; }
     void eaxCommit();
 
-    void eaxCommitFxSlots()
-    { mEaxFxSlots.commit(); }
+    void eaxCommitFxSlots() const { mEaxFxSlots.commit(); }
 
 private:
-    static constexpr auto eax_primary_fx_slot_id_dirty_bit = EaxDirtyFlags{1} << 0;
-    static constexpr auto eax_distance_factor_dirty_bit = EaxDirtyFlags{1} << 1;
-    static constexpr auto eax_air_absorption_hf_dirty_bit = EaxDirtyFlags{1} << 2;
-    static constexpr auto eax_hf_reference_dirty_bit = EaxDirtyFlags{1} << 3;
-    static constexpr auto eax_macro_fx_factor_dirty_bit = EaxDirtyFlags{1} << 4;
+    enum {
+        eax_primary_fx_slot_id_dirty_bit,
+        eax_distance_factor_dirty_bit,
+        eax_air_absorption_hf_dirty_bit,
+        eax_hf_reference_dirty_bit,
+        eax_macro_fx_factor_dirty_bit,
+        eax_dirty_bit_count
+    };
 
     using Eax4Props = EAX40CONTEXTPROPERTIES;
 
@@ -269,12 +293,12 @@ private:
         Eax5Props d; // Deferred.
     };
 
-    class ContextException : public EaxException
-    {
+    /* NOLINTNEXTLINE(clazy-copyable-polymorphic) Exceptions must be copyable. */
+    class ContextException final : public EaxException {
     public:
-        explicit ContextException(const char* message)
+        explicit ContextException(const std::string_view message)
             : EaxException{"EAX_CONTEXT", message}
-        {}
+        { }
     };
 
     struct Eax4PrimaryFxSlotIdValidator {
@@ -292,7 +316,7 @@ private:
     };
 
     struct Eax4DistanceFactorValidator {
-        void operator()(float flDistanceFactor) const
+        void operator()(f32 const flDistanceFactor) const
         {
             eax_validate_range<ContextException>(
                 "Distance Factor",
@@ -303,7 +327,7 @@ private:
     };
 
     struct Eax4AirAbsorptionHfValidator {
-        void operator()(float flAirAbsorptionHF) const
+        void operator()(f32 const flAirAbsorptionHF) const
         {
             eax_validate_range<ContextException>(
                 "Air Absorption HF",
@@ -314,7 +338,7 @@ private:
     };
 
     struct Eax4HfReferenceValidator {
-        void operator()(float flHFReference) const
+        void operator()(f32 const flHFReference) const
         {
             eax_validate_range<ContextException>(
                 "HF Reference",
@@ -349,7 +373,7 @@ private:
     };
 
     struct Eax5MacroFxFactorValidator {
-        void operator()(float flMacroFXFactor) const
+        void operator()(f32 const flMacroFXFactor) const
         {
             eax_validate_range<ContextException>(
                 "Macro FX Factor",
@@ -371,7 +395,7 @@ private:
     };
 
     struct Eax5EaxVersionValidator {
-        void operator()(unsigned long ulEAXVersion) const
+        void operator()(eax_ulong const ulEAXVersion) const
         {
             eax_validate_range<ContextException>(
                 "EAX version",
@@ -382,7 +406,7 @@ private:
     };
 
     struct Eax5MaxActiveSendsValidator {
-        void operator()(unsigned long ulMaxActiveSends) const
+        void operator()(eax_ulong const ulMaxActiveSends) const
         {
             eax_validate_range<ContextException>(
                 "Max Active Sends",
@@ -401,7 +425,7 @@ private:
     };
 
     struct Eax5SpeakerConfigValidator {
-        void operator()(unsigned long ulSpeakerConfig) const
+        void operator()(eax_ulong const ulSpeakerConfig) const
         {
             eax_validate_range<ContextException>(
                 "Speaker Config",
@@ -414,87 +438,76 @@ private:
     bool mEaxIsInitialized{};
     bool mEaxIsTried{};
 
-    long mEaxLastError{};
-    unsigned long mEaxSpeakerConfig{};
+    eax_long mEaxLastError{};
+    eax_ulong mEaxSpeakerConfig{};
 
     EaxFxSlotIndex mEaxPrimaryFxSlotIndex{};
     EaxFxSlots mEaxFxSlots{};
 
     int mEaxVersion{}; // Current EAX version.
     bool mEaxNeedsCommit{};
-    EaxDirtyFlags mEaxDf{}; // Dirty flags for the current EAX version.
+    std::bitset<eax_dirty_bit_count> mEaxDf; // Dirty flags for the current EAX version.
     Eax5State mEax123{}; // EAX1/EAX2/EAX3 state.
     Eax4State mEax4{}; // EAX4 state.
     Eax5State mEax5{}; // EAX5 state.
     Eax5Props mEax{}; // Current EAX state.
     EAXSESSIONPROPERTIES mEaxSession{};
 
-    [[noreturn]] static void eax_fail(const char* message);
+    [[noreturn]] static void eax_fail(std::string_view message);
     [[noreturn]] static void eax_fail_unknown_property_set_id();
     [[noreturn]] static void eax_fail_unknown_primary_fx_slot_id();
     [[noreturn]] static void eax_fail_unknown_property_id();
     [[noreturn]] static void eax_fail_unknown_version();
 
-    // Gets a value from EAX call,
-    // validates it,
-    // and updates the current value.
-    template<typename TValidator, typename TProperty>
-    static void eax_set(const EaxCall& call, TProperty& property)
+    /* Gets a value from EAX call, validates it, and updates the current value. */
+    template<typename TValidator>
+    static void eax_set(const EaxCall &call, auto &property)
     {
-        const auto& value = call.get_value<ContextException, const TProperty>();
+        const auto &value = call.load<const std::remove_cvref_t<decltype(property)>>();
         TValidator{}(value);
         property = value;
     }
 
-    // Gets a new value from EAX call,
-    // validates it,
-    // updates the deferred value,
-    // updates a dirty flag.
-    template<
-        typename TValidator,
-        EaxDirtyFlags TDirtyBit,
-        typename TMemberResult,
-        typename TProps,
-        typename TState>
-    void eax_defer(const EaxCall& call, TState& state, TMemberResult TProps::*member)
+    /* Gets a new value from EAX call, validates it, updates the deferred
+     * value, and updates a dirty flag.
+     */
+    template<typename TValidator>
+    void eax_defer(const EaxCall &call, auto &state, usize const dirty_bit, auto member)
     {
-        const auto& src = call.get_value<ContextException, const TMemberResult>();
+        static_assert(std::invocable<decltype(member), decltype(state.i)>);
+        using TMemberResult = std::invoke_result_t<decltype(member), decltype(state.i)>;
+        const auto &src = call.load<const std::remove_cvref_t<TMemberResult>>();
         TValidator{}(src);
-        const auto& dst_i = state.i.*member;
-        auto& dst_d = state.d.*member;
+        const auto &dst_i = std::invoke(member, state.i);
+        auto &dst_d = std::invoke(member, state.d);
         dst_d = src;
 
         if(dst_i != dst_d)
-            mEaxDf |= TDirtyBit;
+            mEaxDf.set(dirty_bit);
     }
 
-    template<
-        EaxDirtyFlags TDirtyBit,
-        typename TMemberResult,
-        typename TProps,
-        typename TState>
-    void eax_context_commit_property(TState& state, EaxDirtyFlags& dst_df,
-        TMemberResult TProps::*member) noexcept
+    void eax_context_commit_property(auto &state, std::bitset<eax_dirty_bit_count> &dst_df,
+        usize const dirty_bit, std::invocable<decltype(mEax)> auto member) noexcept
     {
-        if((mEaxDf & TDirtyBit) != EaxDirtyFlags{})
+        if(mEaxDf.test(dirty_bit))
         {
-            dst_df |= TDirtyBit;
-            const auto& src_d = state.d.*member;
-            state.i.*member = src_d;
-            mEax.*member = src_d;
+            dst_df.set(dirty_bit);
+            const auto &src_d = std::invoke(member, state.d);
+            std::invoke(member, state.i) = src_d;
+            std::invoke(member, mEax) = src_d;
         }
     }
 
     void eax_initialize_extensions();
     void eax_initialize();
 
-    bool eax_has_no_default_effect_slot() const noexcept;
+    auto eax_has_no_default_effect_slot() const noexcept -> bool;
     void eax_ensure_no_default_effect_slot() const;
-    bool eax_has_enough_aux_sends() const noexcept;
+    auto eax_has_enough_aux_sends() const noexcept -> bool;
     void eax_ensure_enough_aux_sends() const;
-    void eax_ensure_compatibility();
+    void eax_ensure_compatibility() const;
 
-    unsigned long eax_detect_speaker_configuration() const;
+    auto eax_detect_speaker_configuration() const -> eax_ulong;
     void eax_update_speaker_configuration();
 
     void eax_set_last_error_defaults() noexcept;
@@ -516,9 +529,9 @@ private:
 
     void eax_context_commit_primary_fx_slot_id();
     void eax_context_commit_distance_factor();
-    void eax_context_commit_air_absorbtion_hf();
-    void eax_context_commit_hf_reference();
-    void eax_context_commit_macro_fx_factor();
+    void eax_context_commit_air_absorption_hf();
+    static void eax_context_commit_hf_reference();
+    static void eax_context_commit_macro_fx_factor();
 
     void eax_initialize_fx_slots();
 
@@ -531,23 +544,25 @@ private:
     void eax5_defer(const EaxCall& call, Eax5State& state);
     void eax_set(const EaxCall& call);
 
-    void eax4_context_commit(Eax4State& state, EaxDirtyFlags& dst_df);
-    void eax5_context_commit(Eax5State& state, EaxDirtyFlags& dst_df);
+    void eax4_context_commit(Eax4State& state, std::bitset<eax_dirty_bit_count>& dst_df);
+    void eax5_context_commit(Eax5State& state, std::bitset<eax_dirty_bit_count>& dst_df);
     void eax_context_commit();
 #endif // ALSOFT_EAX
 };
 
-using ContextRef = al::intrusive_ptr<ALCcontext>;
+} // namespace al
 
-ContextRef GetContextRef() noexcept;
+using ContextRef = al::intrusive_ptr<al::Context>;
 
-void UpdateContextProps(ALCcontext *context);
+auto GetContextRef() noexcept -> ContextRef;
+
+void UpdateContextProps(al::Context *context);
 
 
-inline bool TrapALError{false};
+inline constinit auto TrapALError = false;
 
 
-#ifdef ALSOFT_EAX
+#if ALSOFT_EAX
 auto AL_APIENTRY EAXSet(const GUID *property_set_id, ALuint property_id,
     ALuint source_id, ALvoid *value, ALuint value_size) noexcept -> ALenum;
 

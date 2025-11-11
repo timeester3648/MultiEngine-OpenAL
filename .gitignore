@@ -9,6 +9,11 @@ win64build
 ## qt-creator
 CMakeLists.txt.user*
 
+## CLion
+.idea
+
+__pycache__/
+
 # exclude project files
 **.sln
 **.vcxproj

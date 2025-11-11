@@ -4,18 +4,20 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <numbers>
 #include <numeric>
+#include <ranges>
+#include <stdexcept>
 #include <tuple>
 
-#include "alnumbers.h"
-#include "opthelpers.h"
+#include "gsl/gsl"
 
 
 using uint = unsigned int;
 
 namespace {
 
-constexpr double Epsilon{1e-9};
+constexpr auto Epsilon = 1e-9;
 
 
 /* The zero-order modified Bessel function of the first kind, used for the
@@ -35,23 +37,23 @@ constexpr auto cyl_bessel_i(T nu, U x) -> U
         throw std::runtime_error{"cyl_bessel_i: nu != 0"};
 
     /* Start at k=1 since k=0 is trivial. */
-    const double x2{x/2.0};
-    double term{1.0};
-    double sum{1.0};
-    int k{1};
+    const auto x2 = x/2.0;
+    auto term = 1.0;
+    auto sum = 1.0;
+    auto k = 1;
 
     /* Let the integration converge until the term of the sum is no longer
      * significant.
      */
-    double last_sum{};
+    auto last_sum = 0.0;
     do {
-        const double y{x2 / k};
+        const auto y = x2 / k;
         ++k;
         last_sum = sum;
         term *= y * y;
         sum += term;
     } while(sum != last_sum);
-    return static_cast<U>(sum);
+    return gsl::narrow_cast<U>(sum);
 }
 
 /* This is the normalized cardinal sine (sinc) function.
@@ -59,11 +61,11 @@ constexpr auto cyl_bessel_i(T nu, U x) -> U
  *   sinc(x) = { 1,                   x = 0
  *             { sin(pi x) / (pi x),  otherwise.
  */
-double Sinc(const double x)
+auto Sinc(const double x) -> double
 {
-    if(std::abs(x) < Epsilon) UNLIKELY
+    if(std::abs(x) < Epsilon) [[unlikely]]
         return 1.0;
-    return std::sin(al::numbers::pi*x) / (al::numbers::pi*x);
+    return std::sin(std::numbers::pi*x) / (std::numbers::pi*x);
 }
 
 /* Calculate a Kaiser window from the given beta value and a normalized k
@@ -80,7 +82,7 @@ double Sinc(const double x)
  *
  *   k = 2 i / M - 1,   where 0 <= i <= M.
  */
-double Kaiser(const double beta, const double k, const double besseli_0_beta)
+auto Kaiser(const double beta, const double k, const double besseli_0_beta) -> double
 {
     if(!(k >= -1.0 && k <= 1.0))
         return 0.0;
@@ -94,22 +96,22 @@ double Kaiser(const double beta, const double k, const double besseli_0_beta)
  *       { ceil(5.79 / 2 pi f_t),                r <= 21.
  *
  */
-constexpr uint CalcKaiserOrder(const double rejection, const double transition)
+constexpr auto CalcKaiserOrder(const double rejection, const double transition) -> uint
 {
-    const double w_t{2.0 * al::numbers::pi * transition};
-    if(rejection > 21.0) LIKELY
-        return static_cast<uint>(std::ceil((rejection - 7.95) / (2.285 * w_t)));
-    return static_cast<uint>(std::ceil(5.79 / w_t));
+    const auto w_t = 2.0 * std::numbers::pi * transition;
+    if(rejection > 21.0) [[likely]]
+        return gsl::narrow_cast<uint>(std::ceil((rejection - 7.95) / (2.285 * w_t)));
+    return gsl::narrow_cast<uint>(std::ceil(5.79 / w_t));
 }
 
 // Calculates the beta value of the Kaiser window.  Rejection is in dB.
-constexpr double CalcKaiserBeta(const double rejection)
+constexpr auto CalcKaiserBeta(const double rejection) -> double
 {
-    if(rejection > 50.0) LIKELY
+    if(rejection > 50.0) [[likely]]
         return 0.1102 * (rejection - 8.7);
     if(rejection >= 21.0)
         return (0.5842 * std::pow(rejection - 21.0, 0.4)) +
-               (0.07886 * (rejection - 21.0));
+            (0.07886 * (rejection - 21.0));
     return 0.0;
 }
 
@@ -125,10 +127,10 @@ constexpr double CalcKaiserBeta(const double rejection)
  *   p    -- gain compensation factor when sampling
  *   f_t  -- normalized center frequency (or cutoff; 0.5 is nyquist)
  */
-double SincFilter(const uint l, const double beta, const double besseli_0_beta, const double gain,
-    const double cutoff, const uint i)
+auto SincFilter(const uint l, const double beta, const double besseli_0_beta, const double gain,
+    const double cutoff, const uint i) -> double
 {
-    const double x{static_cast<double>(i) - l};
+    const auto x = gsl::narrow_cast<double>(i) - l;
     return Kaiser(beta, x/l, besseli_0_beta) * 2.0 * gain * cutoff * Sinc(2.0 * cutoff * x);
 }
 
@@ -138,78 +140,84 @@ double SincFilter(const uint l, const double beta, const double besseli_0_beta, 
 // that's used to cut frequencies above the destination nyquist.
 void PPhaseResampler::init(const uint srcRate, const uint dstRate)
 {
-    const uint gcd{std::gcd(srcRate, dstRate)};
+    const auto gcd = std::gcd(srcRate, dstRate);
     mP = dstRate / gcd;
     mQ = srcRate / gcd;
 
-    /* The cutoff is adjusted by half the transition width, so the transition
-     * ends before the nyquist (0.5).  Both are scaled by the downsampling
-     * factor.
+    /* The cutoff is adjusted by the transition width, so the transition ends
+     * at nyquist (0.5). Both are scaled by the downsampling factor.
      */
-    const auto [cutoff, width] = (mP > mQ) ? std::make_tuple(0.475 / mP, 0.05 / mP)
-        : std::make_tuple(0.475 / mQ, 0.05 / mQ);
+    const auto [cutoff, width] = (mP > mQ) ? std::make_tuple(0.47 / mP, 0.03 / mP)
+        : std::make_tuple(0.47 / mQ, 0.03 / mQ);
 
     // A rejection of -180 dB is used for the stop band. Round up when
     // calculating the left offset to avoid increasing the transition width.
-    const uint l{(CalcKaiserOrder(180.0, width)+1) / 2};
-    const double beta{CalcKaiserBeta(180.0)};
-    const double besseli_0_beta{::cyl_bessel_i(0, beta)};
-    mM = l*2 + 1;
+    static constexpr auto rejection = 180.0;
+    const auto l = (CalcKaiserOrder(rejection, width)+1u) / 2u;
+    static constexpr auto beta = CalcKaiserBeta(rejection);
+    static constexpr auto besseli_0_beta = ::cyl_bessel_i(0, beta);
+    mM = l*2u + 1u;
     mL = l;
     mF.resize(mM);
-    for(uint i{0};i < mM;i++)
-        mF[i] = SincFilter(l, beta, besseli_0_beta, mP, cutoff, i);
+    std::ranges::transform(std::views::iota(0u, mM), mF.begin(), [this,cutoff](const uint i)
+    { return SincFilter(mL, beta, besseli_0_beta, mP, cutoff, i); });
 }
 
 // Perform the upsample-filter-downsample resampling operation using a
 // polyphase filter implementation.
-void PPhaseResampler::process(const al::span<const double> in, const al::span<double> out)
+void PPhaseResampler::process(const std::span<const double> in, const std::span<double> out) const
 {
-    if(out.empty()) UNLIKELY
+    if(out.empty()) [[unlikely]]
         return;
 
     // Handle in-place operation.
-    std::vector<double> workspace;
-    al::span work{out};
-    if(work.data() == in.data()) UNLIKELY
+    auto workspace = std::vector<double>{};
+    auto work = std::span{out};
+    if(work.data() == in.data()) [[unlikely]]
     {
         workspace.resize(out.size());
         work = workspace;
     }
 
-    // Resample the input.
-    const uint p{mP}, q{mQ}, m{mM}, l{mL};
-    const al::span<const double> f{mF};
-    for(uint i{0};i < out.size();i++)
+    const auto f = std::span{mF};
+    const auto p = size_t{mP};
+    const auto q = size_t{mQ};
+    const auto m = size_t{mM};
+    /* Input starts at l to compensate for the filter delay. This will drop any
+     * build-up from the first half of the filter.
+     */
+    auto l = size_t{mL};
+    std::ranges::generate(work, [in,f,p,q,m,&l]
     {
-        // Input starts at l to compensate for the filter delay.  This will
-        // drop any build-up from the first half of the filter.
-        std::size_t j_f{(l + q*i) % p};
-        std::size_t j_s{(l + q*i) / p};
+        auto j_s = l / p;
+        auto j_f = l % p;
+        l += q;
 
         // Only take input when 0 <= j_s < in.size().
-        double r{0.0};
-        if(j_f < m) LIKELY
+        if(j_f >= m) [[unlikely]]
+            return 0.0;
+
+        auto filt_len = (m - j_f - 1)/p + 1;
+        if(j_s+1 > in.size()) [[likely]]
         {
-            std::size_t filt_len{(m-j_f+p-1) / p};
-            if(j_s+1 > in.size()) LIKELY
-            {
-                std::size_t skip{std::min(j_s+1 - in.size(), filt_len)};
-                j_f += p*skip;
-                j_s -= skip;
-                filt_len -= skip;
-            }
-            std::size_t todo{std::min(j_s+1, filt_len)};
-            while(todo)
-            {
-                r += f[j_f] * in[j_s];
-                j_f += p; --j_s;
-                --todo;
-            }
+            const auto skip = std::min(j_s+1-in.size(), filt_len);
+            j_f += p*skip;
+            j_s -= skip;
+            filt_len -= skip;
         }
-        work[i] = r;
-    }
+        /* Get the range of input samples being used for this output sample.
+         * j_s is the first sample and iterates backwards toward 0.
+         */
+        const auto src = in.first(j_s+1).last(std::min(j_s+1, filt_len));
+        return std::accumulate(src.rbegin(), src.rend(), 0.0, [p,f,&j_f](const double cur,
+            const double smp) -> double
+        {
+            const auto ret = cur + f[j_f]*smp;
+            j_f += p;
+            return ret;
+        });
+    });
     // Clean up after in-place operation.
     if(work.data() != out.data())
-        std::copy(work.cbegin(), work.cend(), out.begin());
+        std::ranges::copy(work, out.begin());
 }

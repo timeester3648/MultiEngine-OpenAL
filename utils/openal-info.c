@@ -49,13 +49,14 @@ enum { MaxWidth = 80 };
 
 static void printList(const char *list, char separator)
 {
-    size_t col = MaxWidth, len;
+    size_t col = MaxWidth;
+    size_t len;
     const char *indent = "    ";
     const char *next;
 
     if(!list || *list == '\0')
     {
-        fprintf(stdout, "\n%s!!! none !!!\n", indent);
+        printf("\n%s!!! none !!!\n", indent);
         return;
     }
 
@@ -73,7 +74,7 @@ static void printList(const char *list, char separator)
 
         if(len + col + 2 >= MaxWidth)
         {
-            fprintf(stdout, "\n%s", indent);
+            printf("\n%s", indent);
             col = strlen(indent);
         }
         else
@@ -127,7 +128,8 @@ static ALCenum checkALCErrors(ALCdevice *device, int linenum)
 
 static void printALCInfo(ALCdevice *device)
 {
-    ALCint major, minor;
+    ALCint major;
+    ALCint minor;
 
     if(device)
     {
@@ -356,7 +358,9 @@ static void printEFXInfo(ALCdevice *device)
     char effectNames[] = "EAX Reverb,Reverb,Chorus,Distortion,Echo,Flanger,"
         "Frequency Shifter,Vocal Morpher,Pitch Shifter,Ring Modulator,Autowah,"
         "Compressor,Equalizer,Dedicated Dialog,Dedicated LFE,";
-    ALCint major, minor, sends;
+    ALCint major;
+    ALCint minor;
+    ALCint sends;
     ALuint object;
     char *current;
     int i;

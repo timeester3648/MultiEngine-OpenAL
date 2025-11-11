@@ -31,6 +31,7 @@
  * generators, and have the ability to hook up EFX filters and effects.
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -183,14 +184,18 @@ int main(int argc, char *argv[])
 {
     enum WaveType wavetype = WT_Sine;
     const char *appname = argv[0];
-    ALuint source, buffer;
+    ALuint source;
+    ALuint buffer;
     ALint last_pos;
-    ALint seconds = 4;
+    ALuint seconds = 4;
     ALint srate = -1;
-    ALint tone_freq = 1000;
+    ALuint tone_freq = 1000;
     ALCint dev_rate;
     ALenum state;
     ALfloat gain = 1.0f;
+    ALfloat source_x = 0.0f;
+    ALfloat source_y = 0.0f;
+    ALfloat source_z = 0.0f;
     int i;
 
     argv++; argc--;
@@ -220,7 +225,8 @@ int main(int argc, char *argv[])
 "                                triangle, impulse, noise\n"
 "  --freq/-f <hz>            Tone frequency (default 1000 hz)\n"
 "  --gain/-g <gain>          gain 0.0 to 1 (default 1)\n"
-"  --srate/-s <sample rate>  Sampling rate (default output rate)\n",
+"  --srate/-s <sample rate>  Sampling rate (default output rate)\n"
+"  --position/-p <x,y,z>     Position of the source (default 0,0,0)\n",
                 appname
             );
             CloseAL();
@@ -229,9 +235,10 @@ int main(int argc, char *argv[])
 
         if(i+1 < argc && strcmp(argv[i], "-t") == 0)
         {
+            char *endptr = NULL;
             i++;
-            seconds = atoi(argv[i]);
-            if(seconds <= 0)
+            seconds = (ALuint)strtoul(argv[i], &endptr, 0);
+            if(!endptr || *endptr != '\0' || seconds <= 0)
                 seconds = 4;
         }
         else if(i+1 < argc && (strcmp(argv[i], "--waveform") == 0 || strcmp(argv[i], "-w") == 0))
@@ -254,9 +261,10 @@ int main(int argc, char *argv[])
         }
         else if(i+1 < argc && (strcmp(argv[i], "--freq") == 0 || strcmp(argv[i], "-f") == 0))
         {
+            char *endptr = NULL;
             i++;
-            tone_freq = atoi(argv[i]);
-            if(tone_freq < 1)
+            tone_freq = (ALuint)strtoul(argv[i], &endptr, 0);
+            if(!endptr || *endptr != '\0' || tone_freq < 1)
             {
                 fprintf(stderr, "Invalid tone frequency: %s (min: 1hz)\n", argv[i]);
                 tone_freq = 1;
@@ -264,9 +272,10 @@ int main(int argc, char *argv[])
         }
         else if(i+1 < argc && (strcmp(argv[i], "--gain") == 0 || strcmp(argv[i], "-g") == 0))
         {
+            char *endptr = NULL;
             i++;
-            gain = (ALfloat)atof(argv[i]);
-            if(gain < 0.0f || gain > 1.0f)
+            gain = strtof(argv[i], &endptr);
+            if(!endptr || *endptr != '\0' || gain < 0.0f || gain > 1.0f)
             {
                 fprintf(stderr, "Invalid gain: %s (min: 0.0, max 1.0)\n", argv[i]);
                 gain = 1.0f;
@@ -274,12 +283,40 @@ int main(int argc, char *argv[])
         }
         else if(i+1 < argc && (strcmp(argv[i], "--srate") == 0 || strcmp(argv[i], "-s") == 0))
         {
+            char *endptr = NULL;
             i++;
-            srate = atoi(argv[i]);
-            if(srate < 40)
+            srate = (ALint)strtol(argv[i], &endptr, 0);
+            if(!endptr || *endptr != '\0' || srate < 40)
             {
                 fprintf(stderr, "Invalid sample rate: %s (min: 40hz)\n", argv[i]);
                 srate = 40;
+            }
+        }
+        else if(i+1 < argc && (strcmp(argv[i], "--position") == 0 || strcmp(argv[i], "-p") == 0))
+        {
+            i++;
+            const char *argptr = argv[i];
+            char *nextptr = NULL;
+            bool okay = false;
+
+            source_x = strtof(argptr, &nextptr);
+            if(nextptr != argptr && *nextptr == ',')
+            {
+                argptr = nextptr+1;
+                source_y = strtof(argptr, &nextptr);
+                if(nextptr != argptr && *nextptr == ',')
+                {
+                    argptr = nextptr+1;
+                    source_z = strtof(argptr, &nextptr);
+                    okay = (nextptr != argptr && *nextptr == '\0');
+                }
+            }
+            if(!okay || !isfinite(source_x) || !isfinite(source_y) || !isfinite(source_z))
+            {
+                fprintf(stderr, "Invalid position: %s\n", argv[i]);
+                source_x = 0.0f;
+                source_y = 0.0f;
+                source_z = 0.0f;
             }
         }
     }
@@ -293,21 +330,22 @@ int main(int argc, char *argv[])
         srate = dev_rate;
 
     /* Load the sound into a buffer. */
-    buffer = CreateWave(wavetype, (ALuint)seconds, (ALuint)tone_freq, (ALuint)srate, gain);
+    buffer = CreateWave(wavetype, seconds, tone_freq, (ALuint)srate, gain);
     if(!buffer)
     {
         CloseAL();
         return 1;
     }
 
-    printf("Playing %dhz %s-wave tone with %dhz sample rate and %dhz output, for %d second%s...\n",
-           tone_freq, GetWaveTypeName(wavetype), srate, dev_rate, seconds, (seconds!=1)?"s":"");
+    printf("Playing %uhz %s-wave tone at (%f, %f, %f) with %dhz sample rate and %dhz output, for %u second%s...\n",
+        tone_freq, GetWaveTypeName(wavetype), source_x, source_y, source_z, srate, dev_rate, seconds, (seconds!=1)?"s":"");
     fflush(stdout);
 
     /* Create the source to play the sound with. */
     source = 0;
     alGenSources(1, &source);
     alSourcei(source, AL_BUFFER, (ALint)buffer);
+    alSource3f(source, AL_POSITION, source_x, source_y, source_z);
     assert(alGetError()==AL_NO_ERROR && "Failed to setup sound source");
 
     /* Play the sound for a while. */
@@ -322,7 +360,7 @@ int main(int argc, char *argv[])
 
         if(pos > last_pos)
         {
-            printf("%d...\n", seconds - pos);
+            printf("%u...\n", seconds - (ALuint)pos);
             fflush(stdout);
         }
         last_pos = pos;
