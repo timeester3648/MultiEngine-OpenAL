@@ -272,7 +272,7 @@ auto WinMMPlayback::reset() -> bool
         else if(mFormat.wBitsPerSample == 8)
         {
             mDevice->FmtType = DevFmtUByte;
-            clearval = char{-0x80};
+            clearval = static_cast<char>(-0x80);
         }
         else
         {
@@ -466,7 +466,7 @@ void WinMMCapture::open(std::string_view name)
     switch(mDevice->FmtType)
     {
     case DevFmtUByte:
-        clearval = char{-0x80};
+        clearval = static_cast<char>(-0x80);
         [[fallthrough]];
     case DevFmtShort:
     case DevFmtInt:

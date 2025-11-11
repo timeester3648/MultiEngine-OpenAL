@@ -5,25 +5,25 @@ void main(MultiBuild::Workspace& workspace) {
 	project.name("OpenAL");
 	properties.binary_object_kind(MultiBuild::BinaryObjectKind::eSharedLib);
 	project.license("./COPYING");
-	properties.tags("use_header_only_mle");
-	// TODO: remove when compilation errors fixed
+	properties.tags({ "use_header_only_mle", "utf8" });
 	properties.cpp_dialect(MultiBuild::LangDialectCpp::e20);
 
 	project.include_own_required_includes(true);
 	project.add_required_project_include({
 		"./include"
 	});
+
+	properties.dependencies("fmt");
 	
 	properties.include_directories({
 		"./",
 		"./al",
 		"./alc",
 		"./core",
-		"./common"
+		"./common",
+		"./gsl/include"
 	});
 	
-	properties.defines("HAVE_SSE_INTRINSICS=(INTRINSICS_LEVEL_SSE != 0)");
-
 	properties.files({
 		"./al/**.h",
 		"./al/**.cpp",
@@ -42,7 +42,7 @@ void main(MultiBuild::Workspace& workspace) {
 
 	{
 		MultiBuild::ScopedFilter _(project, "project.compiler:VisualCpp");
-		properties.disable_warnings({ "5030", "4065", "4834", "4267", "4067", "4244", "4018", "4804", "4996", "4060" });
+		properties.disable_warnings({ "5030", "4065", "4834", "4267", "4067", "4244", "4018", "4804", "4996", "4060", "4127", "4324", "4373" });
 	}
 
 	{
@@ -67,6 +67,7 @@ void main(MultiBuild::Workspace& workspace) {
 			"./alc/backends/alsa.cpp",
 			"./alc/backends/oboe.cpp",
 			"./alc/backends/sdl2.cpp",
+			"./alc/backends/sdl3.cpp",
 			"./alc/backends/sndio.cpp",
 			"./alc/backends/opensl.cpp",
 			"./alc/backends/solaris.cpp",
